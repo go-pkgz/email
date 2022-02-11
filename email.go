@@ -71,7 +71,7 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 		opt(&res)
 	}
 
-	res.logger.Logf("[INFO] new email sender created with host: %s:%d, tls: %v, username: %s, timeout: %v",
+	res.logger.Logf("[INFO] new email sender created with host: %s:%d, tls: %v, username: %q, timeout: %v",
 		smtpHost, res.port, res.tls, res.smtpUserName, res.timeOut)
 	return &res
 }

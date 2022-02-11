@@ -15,8 +15,11 @@ import (
 )
 
 func TestEmail_buildMessage(t *testing.T) {
-	e := NewSender("localhost")
-
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+		fmt.Printf(format, args...)
+		fmt.Printf("\n")
+	}}
+	e := NewSender("localhost", Log(l))
 	msg, err := e.buildMessage("this is a test\n12345\n", Params{
 		From:    "from@example.com",
 		To:      []string{"to@example.com", "to2@example.com"},
