@@ -1,5 +1,5 @@
 // Package notify provides email notifier
-package notify
+package email
 
 import (
 	"bytes"
