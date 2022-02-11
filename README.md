@@ -1,6 +1,6 @@
 # email sending library
 
-[![Build Status](https://github.com/go-pkgz/email/workflows/build/badge.svg)](https://github.com/go-pkgz/email/actions) [![Coverage Status](https://coveralls.io/repos/github/go-pkgz/email/badge.svg?branch=master)](https://coveralls.io/github/go-pkgz/flow?branch=master)
+[![Build Status](https://github.com/go-pkgz/email/workflows/build/badge.svg)](https://github.com/go-pkgz/email/actions) [![Coverage Status](https://coveralls.io/repos/github/go-pkgz/email/badge.svg?branch=master)](https://coveralls.io/github/go-pkgz/email?branch=master)
 
 
 The library is a wrapper around the stdlib `net/smtp` simplifying email sending. It supports authentication, SSL/TLS, 
