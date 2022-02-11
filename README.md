@@ -1,9 +1,9 @@
 # email sending library
 
 The library is a wrapper around the stdlib `net/smtp` simplifying email sending. It supports authentication, SSL/TLS, 
-user-specified SMTP servers, content-type, multiple receipts and more.
+user-specified SMTP servers, content-type, charset, multiple recipients and more.
     
-Example:
+Usage example:
 
 ```go
 client := email.NewSender("localhost", email.ContentType("text/html"), email.Auth("user", "pass"))
