@@ -40,9 +40,11 @@ func Charset(charset string) Option {
 	}
 }
 
-// TLS enables TLS support
-func TLS(s *Sender) {
-	s.tls = true
+//TLS enables TLS support
+func TLS(enabled bool) Option {
+	return func(s *Sender) {
+		s.tls = enabled
+	}
 }
 
 // Auth sets smtp username and password

@@ -55,7 +55,7 @@ func TestEmail_New(t *testing.T) {
 	}}
 
 	s := NewSender("localhost", ContentType("text/html"), Port(123),
-		TLS, Auth("user", "pass"), TimeOut(time.Second), Log(logger), Charset("blah"))
+		TLS(true), Auth("user", "pass"), TimeOut(time.Second), Log(logger), Charset("blah"))
 	require.NotNil(t, s)
 	assert.Equal(t, "[INFO] new email sender created with host: localhost:123, tls: true, username: \"user\", timeout: 1s, content type: \"text/html\", charset: \"blah\"",
 		logBuff.String())
@@ -144,7 +144,7 @@ func TestEmail_SendFailedMakeClient(t *testing.T) {
 	}
 
 	{
-		s := NewSender("127.0.0.1", Port(225), TLS, TimeOut(time.Millisecond*200))
+		s := NewSender("127.0.0.1", Port(225), TLS(true), TimeOut(time.Millisecond*200))
 		err := s.Send("some text", Params{
 			From:    "from@example.com",
 			To:      []string{"to@example.com"},
