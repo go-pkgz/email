@@ -28,7 +28,7 @@ _Options should be passed to `NewSender` after the mandatory first (host) parame
 
 ## sending email
 
-To send email you need to create sender first and then use `Send` method. The method accepts two parameters:
+To send email user need to create a sender first and then use `Send` method. The method accepts two parameters:
 
 - email content (string)
 - parameters (`email.Params`)
