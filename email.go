@@ -1,4 +1,4 @@
-// Package notify provides email notifier
+// Package email provides email sender
 package email
 
 import (
