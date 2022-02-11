@@ -126,8 +126,8 @@ func TestEmail_SendFailedMakeClient(t *testing.T) {
 			Subject: "subj",
 		})
 		require.Error(t, err, "failed to make smtp client")
-		assert.EqualError(t, err,
-			"failed to make smtp client: timeout connecting to 127.0.0.2:12345: dial tcp 127.0.0.2:12345: i/o timeout")
+		assert.Contains(t, err.Error(),
+			"failed to make smtp client: timeout connecting to 127.0.0.2:12345:")
 	}
 
 	{
