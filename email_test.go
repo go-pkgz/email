@@ -56,7 +56,7 @@ func TestEmail_New(t *testing.T) {
 	s := NewSender("localhost", ContentType("text/html"), Port(123),
 		TLS, Auth("user", "pass"), TimeOut(time.Second), Log(logger))
 	require.NotNil(t, s)
-	assert.Equal(t, "[INFO] new email sender created with host: localhost:123, tls: true, username: user, timeout: 1s",
+	assert.Equal(t, "[INFO] new email sender created with host: localhost:123, tls: true, username: \"user\", timeout: 1s",
 		logBuff.String())
 }
 
