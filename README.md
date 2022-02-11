@@ -6,7 +6,7 @@ user-specified SMTP servers, content-type, multiple receipts and more.
 Example:
 
 ```go
-client := NewSender("localhost", email.ContentType("text/html"), email.Auth("user", "pass"))
+client := email.NewSender("localhost", email.ContentType("text/html"), email.Auth("user", "pass"))
 err := client.Send("<html>some content, foo bar</html>", 
 	email.Params{From: "me@example.com", To: []string{"to@example.com"}, Subject: "Hello world!"})
 ```
