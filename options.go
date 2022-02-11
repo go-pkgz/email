@@ -33,6 +33,13 @@ func ContentType(contentType string) Option {
 	}
 }
 
+// Charset sets content charset of the email
+func Charset(charset string) Option {
+	return func(s *Sender) {
+		s.contentCharset = charset
+	}
+}
+
 // TLS enables TLS support
 func TLS(s *Sender) {
 	s.tls = true
@@ -42,13 +49,6 @@ func TLS(s *Sender) {
 func Auth(smtpUserName, smtpPasswd string) Option {
 	return func(s *Sender) {
 		s.smtpUserName = smtpUserName
-		s.smtpPassword = smtpPasswd
-	}
-}
-
-// Password sets smtp password
-func Password(smtpPasswd string) Option {
-	return func(s *Sender) {
 		s.smtpPassword = smtpPasswd
 	}
 }

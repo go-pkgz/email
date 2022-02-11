@@ -18,17 +18,17 @@ import (
 
 // Sender implements email sender
 type Sender struct {
-	smtpClient   SMTPClient
-	logger       Logger
-	host         string // SMTP host
-	port         int    // SMTP port
-	contentType  string // Content type, optional. Will trigger MIME and Content-Type headers
-	tls          bool   // TLS auth
-	smtpUserName string // username
-	smtpPassword string // password
-	timeOut      time.Duration
-
-	timeNow func() time.Time
+	smtpClient     SMTPClient
+	logger         Logger
+	host           string // SMTP host
+	port           int    // SMTP port
+	contentType    string // Content type, optional. Will trigger MIME and Content-Type headers
+	tls            bool   // TLS auth
+	smtpUserName   string // username
+	smtpPassword   string // password
+	timeOut        time.Duration
+	contentCharset string
+	timeNow        func() time.Time
 }
 
 // Params contains all user-defined parameters to send emails
@@ -56,16 +56,17 @@ type SMTPClient interface {
 // NewSender creates email client with prepared smtp
 func NewSender(smtpHost string, options ...Option) *Sender {
 	res := Sender{
-		smtpClient:   nil,
-		logger:       nopLogger{},
-		host:         smtpHost,
-		port:         25,
-		contentType:  `text/plain`,
-		tls:          false,
-		smtpUserName: "",
-		smtpPassword: "",
-		timeOut:      time.Second * 30,
-		timeNow:      time.Now,
+		smtpClient:     nil,
+		logger:         nopLogger{},
+		host:           smtpHost,
+		port:           25,
+		contentType:    `text/plain`,
+		tls:            false,
+		smtpUserName:   "",
+		smtpPassword:   "",
+		contentCharset: "UTF-8",
+		timeOut:        time.Second * 30,
+		timeNow:        time.Now,
 	}
 	for _, opt := range options {
 		opt(&res)
@@ -187,7 +188,7 @@ func (em *Sender) buildMessage(text string, params Params) (message string, err 
 
 	if em.contentType != "" {
 		message = addHeader(message, "MIME-version", "1.0")
-		message = addHeader(message, "Content-Type", em.contentType+`; charset="UTF-8"`)
+		message = addHeader(message, "Content-Type", fmt.Sprintf("%s; charset=%q", em.contentType, em.contentCharset))
 	}
 	message = addHeader(message, "Date", em.timeNow().Format(time.RFC1123Z))
 

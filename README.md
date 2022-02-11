@@ -19,6 +19,7 @@ err := client.Send("<html>some content, foo bar</html>",
 - `TLS`: Use TLS SMTP (default: false)
 - `Auth(user, password)`: Username and password for SMTP authentication (default: empty, no authentication)
 - `ContentType`: Content type for the email (default: "text/plain")
+- `Charset`: Charset for the email (default: "utf-8")
 - `TimeOut`: Timeout for the SMTP connection (default: 30 seconds)
 - `Log`: Logger to use (default: no logging)
 - `SMTP`: Set custom smtp client (default: none)
