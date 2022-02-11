@@ -175,7 +175,7 @@ func (em *Sender) client() (c *smtp.Client, err error) {
 	return c, nil
 }
 
-func (em *Sender) buildMessage(msg string, params Params) (message string, err error) {
+func (em *Sender) buildMessage(text string, params Params) (message string, err error) {
 	addHeader := func(msg, h, v string) string {
 		msg += fmt.Sprintf("%s: %s\n", h, v)
 		return msg
@@ -193,10 +193,12 @@ func (em *Sender) buildMessage(msg string, params Params) (message string, err e
 
 	buff := &bytes.Buffer{}
 	qp := quotedprintable.NewWriter(buff)
-	if _, err := qp.Write([]byte(msg)); err != nil {
+	if _, err := qp.Write([]byte(text)); err != nil {
 		return "", err
 	}
-	defer qp.Close()
+	if err := qp.Close(); err != nil {
+		return "", fmt.Errorf("failed to encode text to quoted printable: %w", err)
+	}
 	m := buff.String()
 	message += "\n" + m
 	return message, nil
