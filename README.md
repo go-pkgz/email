@@ -45,14 +45,15 @@ To send email user need to create a sender first and then use `Send` method. The
 
 ## technical details
 
-- Content-Transfer-Encoding set to `quoted-printable'
-- Custom SMTP client (`smtp.Client` from stdlib) can be set with `SMTP` option. In this case it will be used instead of making a new smtp client internally.
+- Content-Transfer-Encoding set to `quoted-printable`
+- Custom SMTP client (`smtp.Client` from stdlib) can be set by user with `SMTP` option. In this case it will be used instead of making a new smtp client internally.
 - Logger can be set with `Log` option. It should implement `email.Logger` interface with a single `Logf(format string, args ...interface{})` method. By default, "no logging" internal logger is used. This interface is compatible with the `go-pkgz/lgr` logger.
 - The library has no external dependencies, except for testing. It uses the stdlib `net/smtp` package.
 - SSL/TLS supported with `TLS` option. Pls note: this is not the same as `STARTTLS` (not supported) which is usually on port 587 vs SSL/TLS on port 465.
 
 ## limitations
 
-This library is not intended to be used for sending emails with attachments or sending a lot of massive emails with low latency. 
-The intended use case is sending messages, like alerts, notification and so on. For example, sending alerts from a monitoring
-system, or for authentication-related emails, i.e.  "password reset email", "verification email", etc.
+This library is not intended to be used for sending emails with attachments or sending a lot of massive emails with 
+low latency requirements. The intended use case is sending simple messages, like alerts, notification and so on.
+For example, sending alerts from a monitoring system, or for authentication-related emails, i.e.  "password reset email", 
+"verification email", etc.
