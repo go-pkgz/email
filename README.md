@@ -27,6 +27,8 @@ err := client.Send("<html>some content, foo bar</html>",
 - `Log`: Logger to use (default: no logging)
 - `SMTP`: Set custom smtp client (default: none)
 
+See [go docs](https://pkg.go.dev/github.com/go-pkgz/email#Option) for `Option` functions.
+
 _Options should be passed to `NewSender` after the mandatory first (host) parameter._
 
 ## sending email
@@ -42,6 +44,8 @@ To send email user need to create a sender first and then use `Send` method. The
         Subject string   // Email subject
     }
     ```
+
+See [go docs](https://pkg.go.dev/github.com/go-pkgz/email#Sender.Send) for `Send` function.
 
 ## technical details
 
