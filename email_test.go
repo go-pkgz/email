@@ -15,39 +15,6 @@ import (
 	"github.com/go-pkgz/email/mocks"
 )
 
-func TestEmail_buildMessage(t *testing.T) {
-	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
-		fmt.Printf(format, args...)
-		fmt.Printf("\n")
-	}}
-	e := NewSender("localhost", Log(l))
-	msg, err := e.buildMessage("this is a test\n12345\n", Params{
-		From:    "from@example.com",
-		To:      []string{"to@example.com", "to2@example.com"},
-		Subject: "subj",
-	})
-	require.NoError(t, err)
-	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com,to2@example.com\nSubject: subj\n", msg)
-	assert.Contains(t, msg, "this is a test\r\n12345", msg)
-	assert.Contains(t, msg, "Date: ", msg)
-	assert.Contains(t, msg, "Content-Transfer-Encoding: quoted-printable", msg)
-}
-
-func TestEmail_buildMessageWithMIME(t *testing.T) {
-
-	e := NewSender("localhost", ContentType("text/html"))
-
-	msg, err := e.buildMessage("this is a test\n12345\n", Params{
-		From:    "from@example.com",
-		To:      []string{"to@example.com"},
-		Subject: "subj",
-	})
-	require.NoError(t, err)
-	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com\nSubject: subj\nContent-Transfer-Encoding: quoted-printable\nMIME-version: 1.0\nContent-Type: text/html; charset=\"UTF-8\"", msg)
-	assert.Contains(t, msg, "\n\nthis is a test\r\n12345", msg)
-	assert.Contains(t, msg, "Date: ", msg)
-}
-
 func TestEmail_New(t *testing.T) {
 	logBuff := bytes.NewBuffer(nil)
 	logger := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
@@ -55,7 +22,9 @@ func TestEmail_New(t *testing.T) {
 	}}
 
 	s := NewSender("localhost", ContentType("text/html"), Port(123),
-		TLS(true), Auth("user", "pass"), TimeOut(time.Second), Log(logger), Charset("blah"))
+		TLS(true), Auth("user", "pass"), TimeOut(time.Second),
+		Log(logger), Charset("blah"),
+	)
 	require.NotNil(t, s)
 	assert.Equal(t, "[INFO] new email sender created with host: localhost:123, tls: true, username: \"user\", timeout: 1s, content type: \"text/html\", charset: \"blah\"",
 		logBuff.String())
@@ -106,7 +75,7 @@ func TestEmail_Send(t *testing.T) {
 	assert.Equal(t, 1, len(smtpClient.QuitCalls()))
 	assert.Equal(t, 1, len(smtpClient.DataCalls()))
 
-	assert.Equal(t, 0, len(smtpClient.CloseCalls()))
+	assert.Equal(t, 0, len(smtpClient.CloseCalls()), "not called because quit is called")
 }
 
 func TestEmail_SendFailedAuth(t *testing.T) {
@@ -128,6 +97,9 @@ func TestEmail_SendFailedAuth(t *testing.T) {
 		Subject: "subj",
 	})
 	require.EqualError(t, err, "failed to auth to smtp localhost:25, auth error")
+	assert.Equal(t, 1, len(smtpClient.AuthCalls()))
+	assert.Equal(t, 0, len(smtpClient.QuitCalls()))
+	assert.Equal(t, 1, len(smtpClient.CloseCalls()), "called because quit is not called before")
 }
 
 func TestEmail_SendFailedMakeClient(t *testing.T) {
@@ -155,23 +127,116 @@ func TestEmail_SendFailedMakeClient(t *testing.T) {
 }
 
 func TestEmail_SendFailed(t *testing.T) {
-	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil), fail: true}
-	smtpClient := &mocks.SMTPClientMock{
-		AuthFunc:  func(auth smtp.Auth) error { return nil },
-		CloseFunc: func() error { return nil },
-		MailFunc:  func(string) error { return nil },
-		QuitFunc:  func() error { return nil },
-		RcptFunc:  func(s string) error { return nil },
-		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
-	}
 
-	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
-	err := s.Send("some text\n", Params{
+	{
+		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil), fail: true}
+		smtpClient := &mocks.SMTPClientMock{
+			AuthFunc:  func(auth smtp.Auth) error { return nil },
+			CloseFunc: func() error { return nil },
+			MailFunc:  func(string) error { return nil },
+			QuitFunc:  func() error { return nil },
+			RcptFunc:  func(s string) error { return nil },
+			DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+		}
+
+		s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+		err := s.Send("some text\n", Params{
+			From:    "from@example.com",
+			To:      []string{"to@example.com"},
+			Subject: "subj",
+		})
+		require.EqualError(t, err, "failed to send email body to [\"to@example.com\"]: write error")
+	}
+	{
+		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+		smtpClient := &mocks.SMTPClientMock{
+			AuthFunc:  func(auth smtp.Auth) error { return nil },
+			CloseFunc: func() error { return nil },
+			MailFunc:  func(string) error { return errors.New("mail error") },
+			QuitFunc:  func() error { return nil },
+			RcptFunc:  func(s string) error { return nil },
+			DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+		}
+
+		s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+		err := s.Send("some text\n", Params{
+			From:    "from@example.com",
+			To:      []string{"to@example.com"},
+			Subject: "subj",
+		})
+		require.EqualError(t, err, "bad from address \"from@example.com\": mail error")
+	}
+	{
+		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+		smtpClient := &mocks.SMTPClientMock{
+			AuthFunc:  func(auth smtp.Auth) error { return nil },
+			CloseFunc: func() error { return nil },
+			MailFunc:  func(string) error { return nil },
+			QuitFunc:  func() error { return nil },
+			RcptFunc:  func(s string) error { return nil },
+			DataFunc:  func() (io.WriteCloser, error) { return wc, errors.New("data error") },
+		}
+
+		s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+		err := s.Send("some text\n", Params{
+			From:    "from@example.com",
+			To:      []string{"to@example.com"},
+			Subject: "subj",
+		})
+		require.EqualError(t, err, "can't make email writer: data error")
+	}
+	{
+		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+		smtpClient := &mocks.SMTPClientMock{
+			AuthFunc:  func(auth smtp.Auth) error { return nil },
+			CloseFunc: func() error { return nil },
+			MailFunc:  func(string) error { return nil },
+			QuitFunc:  func() error { return nil },
+			RcptFunc:  func(s string) error { return nil },
+			DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+		}
+
+		s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+		err := s.Send("some text\n", Params{
+			From:    "from@example.com",
+			To:      []string{},
+			Subject: "subj",
+		})
+		require.EqualError(t, err, "no recipients")
+	}
+}
+
+func TestEmail_buildMessage(t *testing.T) {
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+		fmt.Printf(format, args...)
+		fmt.Printf("\n")
+	}}
+	e := NewSender("localhost", Log(l))
+	msg, err := e.buildMessage("this is a test\n12345\n", Params{
+		From:    "from@example.com",
+		To:      []string{"to@example.com", "to2@example.com"},
+		Subject: "subj",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com,to2@example.com\nSubject: subj\n", msg)
+	assert.Contains(t, msg, "this is a test\r\n12345", msg)
+	assert.Contains(t, msg, "Date: ", msg)
+	assert.Contains(t, msg, "Content-Transfer-Encoding: quoted-printable", msg)
+}
+
+func TestEmail_buildMessageWithMIME(t *testing.T) {
+
+	e := NewSender("localhost", ContentType("text/html"))
+
+	msg, err := e.buildMessage("this is a test\n12345\n", Params{
 		From:    "from@example.com",
 		To:      []string{"to@example.com"},
 		Subject: "subj",
 	})
-	require.EqualError(t, err, "failed to send email body to [\"to@example.com\"]: write error")
+	require.NoError(t, err)
+	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com\nSubject: subj\nContent-Transfer-Encoding: quoted-printable\nMIME-version: 1.0\nContent-Type: text/html; charset=\"UTF-8\"", msg)
+	assert.Contains(t, msg, "\n\nthis is a test\r\n12345", msg)
+	assert.Contains(t, msg, "Date: ", msg)
 }
 
 type fakeWriterCloser struct {

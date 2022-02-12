@@ -4,6 +4,7 @@ package email
 import (
 	"bytes"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"mime/quotedprintable"
@@ -82,10 +83,8 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 // If SMTPClient defined in Email struct it will be used, if not - new smtp.Client on each send.
 // Always closes client on completion or failure.
 func (em *Sender) Send(text string, params Params) error {
-	if len(params.To) == 0 {
-		return nil
-	}
 	em.logger.Logf("[DEBUG] send %q to %v", text, params.To)
+
 	client := em.smtpClient
 	if client == nil { // if client not set make new net/smtp
 		c, err := em.client()
@@ -97,13 +96,17 @@ func (em *Sender) Send(text string, params Params) error {
 
 	var quit bool
 	defer func() {
-		if quit { // quit set if Quit() call passed because it's closing connection as well.
+		if quit || client == nil { // quit set if Quit() call passed because it's closing connection as well.
 			return
 		}
 		if err := client.Close(); err != nil {
 			em.logger.Logf("[WARN] can't close smtp connection, %v", err)
 		}
 	}()
+
+	if len(params.To) == 0 {
+		return errors.New("no recipients")
+	}
 
 	if em.smtpUserName != "" && em.smtpPassword != "" {
 		auth := smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
