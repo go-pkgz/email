@@ -40,7 +40,7 @@ func Charset(charset string) Option {
 	}
 }
 
-//TLS enables TLS support
+// TLS enables TLS support
 func TLS(enabled bool) Option {
 	return func(s *Sender) {
 		s.tls = enabled
