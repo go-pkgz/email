@@ -4,12 +4,18 @@ package email
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
+	"net/http"
 	"net/smtp"
+	"net/textproto"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -34,9 +40,10 @@ type Sender struct {
 
 // Params contains all user-defined parameters to send emails
 type Params struct {
-	From    string   // From email field
-	To      []string // From email field
-	Subject string   // Email subject
+	From        string   // From email field
+	To          []string // From email field
+	Subject     string   // Email subject
+	Attachments []string // Attachments path
 }
 
 // Logger is used to log errors and debug messages
@@ -188,25 +195,107 @@ func (em *Sender) buildMessage(text string, params Params) (message string, err 
 	message = addHeader(message, "From", params.From)
 	message = addHeader(message, "To", strings.Join(params.To, ","))
 	message = addHeader(message, "Subject", params.Subject)
-	message = addHeader(message, "Content-Transfer-Encoding", "quoted-printable")
 
-	if em.contentType != "" {
+	withAttachments := len(params.Attachments) > 0
+
+	if em.contentType != "" || withAttachments {
 		message = addHeader(message, "MIME-version", "1.0")
-		message = addHeader(message, "Content-Type", fmt.Sprintf("%s; charset=%q", em.contentType, em.contentCharset))
 	}
+
 	message = addHeader(message, "Date", em.timeNow().Format(time.RFC1123Z))
 
 	buff := &bytes.Buffer{}
 	qp := quotedprintable.NewWriter(buff)
-	if _, err := qp.Write([]byte(text)); err != nil {
-		return "", err
+	mp := multipart.NewWriter(buff)
+	boundary := mp.Boundary()
+
+	if withAttachments {
+		message = addHeader(message, "Content-Type", fmt.Sprintf("multipart/mixed; boundary=%q\r\n\r\n%s\r",
+			boundary, "--"+boundary))
 	}
-	if err := qp.Close(); err != nil {
-		return "", fmt.Errorf("failed to encode text to quoted printable: %w", err)
+
+	if em.contentType != "" {
+		message = addHeader(message, "Content-Transfer-Encoding", "quoted-printable")
+		message = addHeader(message, "Content-Type", fmt.Sprintf("%s; charset=%q", em.contentType, em.contentCharset))
+
 	}
+
+	if err := em.writeBody(qp, text); err != nil {
+		return "", fmt.Errorf("failed to write body: %w", err)
+	}
+
+	if withAttachments {
+		buff.WriteString("\r\n\r\n")
+		if err := em.writeAttachments(mp, params.Attachments); err != nil {
+			return "", fmt.Errorf("failed to write attachments: %w", err)
+		}
+	}
+
 	m := buff.String()
 	message += "\n" + m
+	// returns base part of the file location
 	return message, nil
+}
+
+func (em *Sender) writeBody(wc io.WriteCloser, text string) error {
+	if _, err := wc.Write([]byte(text)); err != nil {
+		return err
+	}
+	if err := wc.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (em *Sender) writeAttachments(mp *multipart.Writer, attachments []string) error {
+	for _, attachment := range attachments {
+		file, err := os.Open(filepath.Clean(attachment))
+		if err != nil {
+			return err
+		}
+
+		// we need first 512 bytes to detect file type
+		fTypeBuff := make([]byte, 512)
+		_, err = file.Read(fTypeBuff)
+		if err != nil {
+			return fmt.Errorf("failed to read file type %q: %w", attachment, err)
+		}
+
+		// remove null bytes in case file less than 512 bytes
+		fTypeBuff = bytes.Trim(fTypeBuff, "\x00")
+		fName := filepath.Base(attachment)
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Type", http.DetectContentType(fTypeBuff)+"; name=\""+fName+"\"")
+		header.Set("Content-Transfer-Encoding", "base64")
+		header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fName))
+
+		writer, err := mp.CreatePart(header)
+		if err != nil {
+			return err
+		}
+
+		// set reader offset at the beginning of the file because we read first 512 bytes
+		_, err = file.Seek(0, io.SeekStart)
+		if err != nil {
+			return err
+		}
+
+		encoder := base64.NewEncoder(base64.StdEncoding, writer)
+		if _, err := io.Copy(encoder, file); err != nil {
+			return err
+		}
+		if err := encoder.Close(); err != nil {
+			return err
+		}
+
+		if err := file.Close(); err != nil {
+			return err
+		}
+	}
+	if err := mp.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 type nopLogger struct{}

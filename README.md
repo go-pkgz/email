@@ -11,7 +11,7 @@ Usage example:
 ```go
 client := email.NewSender("localhost", email.ContentType("text/html"), email.Auth("user", "pass"))
 err := client.Send("<html>some content, foo bar</html>", 
-	email.Params{From: "me@example.com", To: []string{"to@example.com"}, Subject: "Hello world!"})
+	email.Params{From: "me@example.com", To: []string{"to@example.com"}, Subject: "Hello world!", Attachments: []string{"/path/to/file1.txt", "/path/to/file2.txt"}})
 ```
 
 ## options
@@ -39,9 +39,10 @@ To send email user need to create a sender first and then use `Send` method. The
 - parameters (`email.Params`)
     ```go
     type Params struct {
-        From    string   // From email field
-        To      []string // From email field
-        Subject string   // Email subject
+        From        string        // From email field
+        To          []string      // From email field
+        Subject     string        // Email subject
+        Attachments []string      // Attachments
     }
     ```
 
