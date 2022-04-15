@@ -58,7 +58,7 @@ See [go docs](https://pkg.go.dev/github.com/go-pkgz/email#Sender.Send) for `Send
 
 ## limitations
 
-This library is not intended to be used for sending emails with attachments or sending a lot of massive emails with 
+This library is not intended to be used for sending a lot of massive emails with 
 low latency requirements. The intended use case is sending simple messages, like alerts, notification and so on.
 For example, sending alerts from a monitoring system, or for authentication-related emails, i.e.  "password reset email", 
 "verification email", etc.
