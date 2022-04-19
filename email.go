@@ -40,10 +40,11 @@ type Sender struct {
 
 // Params contains all user-defined parameters to send emails
 type Params struct {
-	From        string   // From email field
-	To          []string // From email field
-	Subject     string   // Email subject
-	Attachments []string // Attachments path
+	From         string   // From email field
+	To           []string // From email field
+	Subject      string   // Email subject
+	Attachments  []string // Attachments path
+	InlineImages []string // InlineImages images path
 }
 
 // Logger is used to log errors and debug messages
@@ -197,8 +198,9 @@ func (em *Sender) buildMessage(text string, params Params) (message string, err 
 	message = addHeader(message, "Subject", params.Subject)
 
 	withAttachments := len(params.Attachments) > 0
+	withInlineImg := len(params.InlineImages) > 0
 
-	if em.contentType != "" || withAttachments {
+	if em.contentType != "" || withAttachments || withInlineImg {
 		message = addHeader(message, "MIME-version", "1.0")
 	}
 
@@ -206,12 +208,19 @@ func (em *Sender) buildMessage(text string, params Params) (message string, err 
 
 	buff := &bytes.Buffer{}
 	qp := quotedprintable.NewWriter(buff)
-	mp := multipart.NewWriter(buff)
-	boundary := mp.Boundary()
+	mpMixed := multipart.NewWriter(buff)
+	boundaryMixed := mpMixed.Boundary()
+	mpRelated := multipart.NewWriter(buff)
+	boundaryRelated := mpRelated.Boundary()
 
 	if withAttachments {
 		message = addHeader(message, "Content-Type", fmt.Sprintf("multipart/mixed; boundary=%q\r\n\r\n%s\r",
-			boundary, "--"+boundary))
+			boundaryMixed, "--"+boundaryMixed))
+	}
+
+	if withInlineImg {
+		message = addHeader(message, "Content-Type", fmt.Sprintf("multipart/related; boundary=%q\r\n\r\n%s\r",
+			boundaryRelated, "--"+boundaryRelated))
 	}
 
 	if em.contentType != "" {
@@ -224,9 +233,16 @@ func (em *Sender) buildMessage(text string, params Params) (message string, err 
 		return "", fmt.Errorf("failed to write body: %w", err)
 	}
 
+	if withInlineImg {
+		buff.WriteString("\r\n\r\n")
+		if err := em.writeFiles(mpRelated, params.InlineImages, "inline"); err != nil {
+			return "", fmt.Errorf("failed to write inline images: %w", err)
+		}
+	}
+
 	if withAttachments {
 		buff.WriteString("\r\n\r\n")
-		if err := em.writeAttachments(mp, params.Attachments); err != nil {
+		if err := em.writeFiles(mpMixed, params.Attachments, "attachment"); err != nil {
 			return "", fmt.Errorf("failed to write attachments: %w", err)
 		}
 	}
@@ -247,8 +263,8 @@ func (em *Sender) writeBody(wc io.WriteCloser, text string) error {
 	return nil
 }
 
-func (em *Sender) writeAttachments(mp *multipart.Writer, attachments []string) error {
-	for _, attachment := range attachments {
+func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition string) error {
+	for _, attachment := range files {
 		file, err := os.Open(filepath.Clean(attachment))
 		if err != nil {
 			return err
@@ -267,7 +283,14 @@ func (em *Sender) writeAttachments(mp *multipart.Writer, attachments []string) e
 		header := textproto.MIMEHeader{}
 		header.Set("Content-Type", http.DetectContentType(fTypeBuff)+"; name=\""+fName+"\"")
 		header.Set("Content-Transfer-Encoding", "base64")
-		header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fName))
+
+		switch disposition {
+		case "attachment":
+			header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fName))
+		case "inline":
+			header.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", fName))
+			header.Set("Content-ID", fmt.Sprintf("<%s>", fName))
+		}
 
 		writer, err := mp.CreatePart(header)
 		if err != nil {
