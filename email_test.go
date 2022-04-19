@@ -383,12 +383,88 @@ func TestEmail_buildMessageWithMIMEAndWrongAttachments(t *testing.T) {
 	require.Equal(t, "", msg)
 }
 
+func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+		fmt.Printf(format, args...)
+		fmt.Printf("\n")
+	}}
+
+	e := NewSender("localhost", ContentType("text/html"),
+		Port(2525),
+		Log(l))
+
+	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:image.jpg\"></div>\n", Params{
+		From:         "from@example.com",
+		To:           []string{"to@example.com"},
+		Subject:      "test email with attachments",
+		InlineImages: []string{"testdata/image.jpg"},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, msg, "MIME-version: 1.0", msg)
+	assert.Contains(t, msg, "Content-Type", "multipart/related; boundary=", msg)
+	assert.Contains(t, msg, "Content-Disposition: inline; filename=\"image.jpg\"", msg)
+	assert.Contains(t, msg, "Content-Id: <image.jpg>", msg)
+	assert.Contains(t, msg, "Content-Transfer-Encoding: base64", msg)
+	fData, err := os.ReadFile("testdata/image.jpg")
+	require.NoError(t, err)
+
+	b := make([]byte, base64.StdEncoding.EncodedLen(len(fData)))
+	base64.StdEncoding.Encode(b, fData)
+	assert.Contains(t, msg, string(b), msg)
+}
+
+func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+		fmt.Printf(format, args...)
+		fmt.Printf("\n")
+	}}
+
+	e := NewSender("localhost", ContentType("text/html"),
+		Port(2525),
+		Log(l))
+
+	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:image.jpg\"></div>\n", Params{
+		From:         "from@example.com",
+		To:           []string{"to@example.com"},
+		Subject:      "test email with attachments",
+		Attachments:  []string{"testdata/1.txt", "testdata/2.txt", "testdata/image.jpg"},
+		InlineImages: []string{"testdata/image.jpg"},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, msg, "MIME-version: 1.0", msg)
+	assert.Contains(t, msg, "Content-Type", "multipart/mixed; boundary=", msg)
+	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"1.txt\"", msg)
+	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"2.txt\"", msg)
+	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"image.jpg\"", msg)
+	assert.Contains(t, msg, "Content-Type", "multipart/related; boundary=", msg)
+	assert.Contains(t, msg, "Content-Disposition: inline; filename=\"image.jpg\"", msg)
+	assert.Contains(t, msg, "Content-Id: <image.jpg>", msg)
+	assert.Contains(t, msg, "Content-Transfer-Encoding: base64", msg)
+
+	fData1, err := os.ReadFile("testdata/1.txt")
+	require.NoError(t, err)
+	fData2, err := os.ReadFile("testdata/2.txt")
+	require.NoError(t, err)
+	fData3, err := os.ReadFile("testdata/image.jpg")
+	require.NoError(t, err)
+
+	b1 := make([]byte, base64.StdEncoding.EncodedLen(len(fData1)))
+	base64.StdEncoding.Encode(b1, fData1)
+	b2 := make([]byte, base64.StdEncoding.EncodedLen(len(fData2)))
+	base64.StdEncoding.Encode(b2, fData2)
+	b3 := make([]byte, base64.StdEncoding.EncodedLen(len(fData3)))
+	base64.StdEncoding.Encode(b3, fData3)
+	assert.Contains(t, msg, string(b1), msg)
+	assert.Contains(t, msg, string(b2), msg)
+	assert.Contains(t, msg, string(b3), msg)
+}
+
 func TestWriteAttachmentsFailed(t *testing.T) {
 
 	e := NewSender("localhost", ContentType("text/html"))
 	wc := &fakeWriterCloser{fail: true}
 	mp := multipart.NewWriter(wc)
-	err := e.writeAttachments(mp, []string{"testdata/1.txt"})
+	err := e.writeFiles(mp, []string{"testdata/1.txt"}, "attachment")
 	require.Error(t, err)
 }
 
@@ -410,9 +486,11 @@ func TestWriteBodyFail(t *testing.T) {
 // uncomment to debug with real smtp server
 // func TestSendIntegration(t *testing.T) {
 //	client := NewSender("localhost", ContentType("text/html"), Port(2525))
-//	err := client.Send("<html>some content, foo bar</html>",
+//	err := client.Send("<html><div>some content, foo bar</div>\n<div><img src=\"cid:image.jpg\"/>\n</div></html>",
 //		Params{From: "me@example.com", To: []string{"to@example.com"}, Subject: "Hello world!",
-//			Attachments: []string{"testdata/1.txt", "testdata/2.txt", "testdata/image.jpg"}})
+//			Attachments: []string{"testdata/1.txt", "testdata/2.txt", "testdata/image.jpg"},
+//			InlineImages: []string{"testdata/image.jpg"},
+//		})
 //	require.NoError(t, err)
 //}
 
