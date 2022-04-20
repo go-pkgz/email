@@ -47,6 +47,13 @@ func TLS(enabled bool) Option {
 	}
 }
 
+// STARTTLS enables STARTTLS support
+func STARTTLS(enabled bool) Option {
+	return func(s *Sender) {
+		s.starttls = enabled
+	}
+}
+
 // Auth sets smtp username and password
 func Auth(smtpUserName, smtpPasswd string) Option {
 	return func(s *Sender) {

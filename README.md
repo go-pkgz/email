@@ -20,6 +20,7 @@ err := client.Send("<html>some content, foo bar</html>",
 
 - `Port`: SMTP port (default: 25)
 - `TLS`: Use TLS SMTP (default: false)
+- `STARTTLS`: Use STARTTLS (default: false)
 - `Auth(user, password)`: Username and password for SMTP authentication (default: empty, no authentication)
 - `ContentType`: Content type for the email (default: "text/plain")
 - `Charset`: Charset for the email (default: "utf-8")
