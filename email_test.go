@@ -25,7 +25,7 @@ func TestEmail_New(t *testing.T) {
 	}}
 
 	s := NewSender("localhost", ContentType("text/html"), Port(123),
-		TLS(true), Auth("user", "pass"), TimeOut(time.Second),
+		TLS(true), STARTTLS(true), Auth("user", "pass"), TimeOut(time.Second),
 		Log(logger), Charset("blah"),
 	)
 	require.NotNil(t, s)
@@ -40,6 +40,7 @@ func TestEmail_New(t *testing.T) {
 	assert.Equal(t, "text/html", s.contentType)
 	assert.Equal(t, "blah", s.contentCharset)
 	assert.Equal(t, true, s.tls)
+	assert.True(t, s.starttls)
 }
 
 func TestEmail_Send(t *testing.T) {
@@ -103,6 +104,72 @@ func TestEmail_SendFailedAuth(t *testing.T) {
 	assert.Equal(t, 1, len(smtpClient.AuthCalls()))
 	assert.Equal(t, 0, len(smtpClient.QuitCalls()))
 	assert.Equal(t, 1, len(smtpClient.CloseCalls()), "called because quit is not called before")
+}
+
+func TestEmail_SendFailedQUIT(t *testing.T) {
+	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+	smtpClient := &mocks.SMTPClientMock{
+		AuthFunc:  func(auth smtp.Auth) error { return nil },
+		CloseFunc: func() error { return nil },
+		MailFunc:  func(string) error { return nil },
+		QuitFunc:  func() error { return errors.New("quit error") },
+		RcptFunc:  func(s string) error { return nil },
+		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+	}
+
+	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+	err := s.Send("some text\n", Params{
+		From:    "from@example.com",
+		To:      []string{"to@example.com"},
+		Subject: "subj",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(smtpClient.QuitCalls()))
+	assert.Equal(t, 1, len(smtpClient.CloseCalls()))
+}
+
+func TestEmail_SendFailedCLOSE(t *testing.T) {
+	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+	smtpClient := &mocks.SMTPClientMock{
+		AuthFunc:  func(auth smtp.Auth) error { return nil },
+		CloseFunc: func() error { return errors.New("close error") },
+		MailFunc:  func(string) error { return nil },
+		QuitFunc:  func() error { return errors.New("quit error") },
+		RcptFunc:  func(s string) error { return nil },
+		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+	}
+
+	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+	err := s.Send("some text\n", Params{
+		From:    "from@example.com",
+		To:      []string{"to@example.com"},
+		Subject: "subj",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(smtpClient.QuitCalls()))
+	assert.Equal(t, 1, len(smtpClient.CloseCalls()))
+}
+
+func TestEmail_SendFailedRCPTO(t *testing.T) {
+	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+	smtpClient := &mocks.SMTPClientMock{
+		AuthFunc:  func(auth smtp.Auth) error { return nil },
+		CloseFunc: func() error { return nil },
+		MailFunc:  func(string) error { return nil },
+		QuitFunc:  func() error { return nil },
+		RcptFunc:  func(s string) error { return errors.New("RCPT error") },
+		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+	}
+
+	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+	err := s.Send("some text\n", Params{
+		From:    "from@example.com",
+		To:      []string{"to@example.com"},
+		Subject: "subj",
+	})
+	require.Error(t, err)
+	assert.EqualError(t, err, "bad to address [\"to@example.com\"]: RCPT error")
+	assert.Equal(t, 1, len(smtpClient.RcptCalls()))
 }
 
 func TestEmail_SendFailedMakeClient(t *testing.T) {

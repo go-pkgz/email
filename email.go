@@ -31,6 +31,7 @@ type Sender struct {
 	port           int    // SMTP port
 	contentType    string // Content type, optional. Will trigger MIME and Content-Type headers
 	tls            bool   // TLS auth
+	starttls       bool   // StartTLS
 	smtpUserName   string // username
 	smtpPassword   string // password
 	timeOut        time.Duration
@@ -159,12 +160,13 @@ func (em *Sender) Send(text string, params Params) error {
 
 func (em *Sender) client() (c *smtp.Client, err error) {
 	srvAddress := fmt.Sprintf("%s:%d", em.host, em.port)
+	tlsConf := &tls.Config{
+		InsecureSkipVerify: false,
+		ServerName:         em.host,
+		MinVersion:         tls.VersionTLS12,
+	}
+
 	if em.tls {
-		tlsConf := &tls.Config{
-			InsecureSkipVerify: false,
-			ServerName:         em.host,
-			MinVersion:         tls.VersionTLS12,
-		}
 		conn, e := tls.Dial("tcp", srvAddress, tlsConf)
 		if e != nil {
 			return nil, fmt.Errorf("failed to dial smtp tls to %s: %w", srvAddress, e)
@@ -184,6 +186,13 @@ func (em *Sender) client() (c *smtp.Client, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial: %w", err)
 	}
+
+	if em.starttls {
+		if err = c.StartTLS(tlsConf); err != nil {
+			return nil, fmt.Errorf("failed to start tls: %w", err)
+		}
+	}
+
 	return c, nil
 }
 
