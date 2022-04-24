@@ -160,7 +160,7 @@ func (em *Sender) Send(text string, params Params) error {
 }
 
 func (em *Sender) String() string {
-	return fmt.Sprintf("smtp://%s:%d, auth:%v, tls:%v, starttls:%v timeout:%v, content-type:%q, charset:%q",
+	return fmt.Sprintf("smtp://%s:%d, auth:%v, tls:%v, starttls:%v, timeout:%v, content-type:%q, charset:%q",
 		em.host, em.port, em.smtpUserName != "", em.tls, em.starttls, em.timeOut, em.contentType, em.contentCharset)
 }
 

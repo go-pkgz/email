@@ -485,12 +485,12 @@ func TestWriteBodyFail(t *testing.T) {
 
 func TestSender_String(t *testing.T) {
 	e := NewSender("localhost", ContentType("text/html"), Port(2525), Auth("user", "pass"))
-	assert.Equal(t, `smtp://localhost:2525, auth:true, tls:false, starttls:false timeout:30s, content-type:"text/html", charset:"UTF-8"`,
+	assert.Equal(t, `smtp://localhost:2525, auth:true, tls:false, starttls:false, timeout:30s, content-type:"text/html", charset:"UTF-8"`,
 		e.String())
 
 	e = NewSender("localhost", ContentType("text/html"), Port(2525), TLS(true),
 		STARTTLS(true), TimeOut(10*time.Second))
-	assert.Equal(t, `smtp://localhost:2525, auth:false, tls:true, starttls:true timeout:10s, content-type:"text/html", charset:"UTF-8"`,
+	assert.Equal(t, `smtp://localhost:2525, auth:false, tls:true, starttls:true, timeout:10s, content-type:"text/html", charset:"UTF-8"`,
 		e.String())
 }
 
