@@ -483,6 +483,17 @@ func TestWriteBodyFail(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSender_String(t *testing.T) {
+	e := NewSender("localhost", ContentType("text/html"), Port(2525), Auth("user", "pass"))
+	assert.Equal(t, `smtp://localhost:2525, auth:true, tls:false, starttls:false timeout:30s, content-type:"text/html", charset:"UTF-8"`,
+		e.String())
+
+	e = NewSender("localhost", ContentType("text/html"), Port(2525), TLS(true),
+		STARTTLS(true), TimeOut(10*time.Second))
+	assert.Equal(t, `smtp://localhost:2525, auth:false, tls:true, starttls:true timeout:10s, content-type:"text/html", charset:"UTF-8"`,
+		e.String())
+}
+
 // uncomment to debug with real smtp server
 // func TestSendIntegration(t *testing.T) {
 //	client := NewSender("localhost", ContentType("text/html"), Port(2525))
@@ -492,7 +503,7 @@ func TestWriteBodyFail(t *testing.T) {
 //			InlineImages: []string{"testdata/image.jpg"},
 //		})
 //	require.NoError(t, err)
-//}
+// }
 
 type fakeWriterCloser struct {
 	buff *bytes.Buffer

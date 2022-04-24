@@ -159,6 +159,11 @@ func (em *Sender) Send(text string, params Params) error {
 	return nil
 }
 
+func (em *Sender) String() string {
+	return fmt.Sprintf("smtp://%s:%d, auth:%v, tls:%v, starttls:%v timeout:%v, content-type:%q, charset:%q",
+		em.host, em.port, em.smtpUserName != "", em.tls, em.starttls, em.timeOut, em.contentType, em.contentCharset)
+}
+
 func (em *Sender) client() (c *smtp.Client, err error) {
 	srvAddress := fmt.Sprintf("%s:%d", em.host, em.port)
 	tlsConf := &tls.Config{
