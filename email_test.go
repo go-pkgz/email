@@ -301,11 +301,11 @@ func TestEmail_buildMessageWithMIME(t *testing.T) {
 	msg, err := e.buildMessage("this is a test\n12345\n", Params{
 		From:    "from@example.com",
 		To:      []string{"to@example.com"},
-		Subject: "subj",
+		Subject: "non-ascii symbols: Привет",
 	})
 	require.NoError(t, err)
 	assert.Contains(t, msg, "Content-Transfer-Encoding: quoted-printable\nContent-Type: text/html; charset=\"UTF-8\"", msg)
-	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com\nSubject: subj\nMIME-version: 1.0", msg)
+	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com\nSubject: =?utf-8?b?bm9uLWFzY2lpIHN5bWJvbHM6INCf0YDQuNCy0LXRgg==?=\nMIME-version: 1.0", msg)
 	assert.Contains(t, msg, "\n\nthis is a test\r\n12345\r\n", msg)
 	assert.Contains(t, msg, "Date: ", msg)
 }
