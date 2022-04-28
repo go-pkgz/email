@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
@@ -209,7 +210,7 @@ func (em *Sender) buildMessage(text string, params Params) (message string, err 
 	}
 	message = addHeader(message, "From", params.From)
 	message = addHeader(message, "To", strings.Join(params.To, ","))
-	message = addHeader(message, "Subject", params.Subject)
+	message = addHeader(message, "Subject", mime.BEncoding.Encode("utf-8", params.Subject))
 
 	withAttachments := len(params.Attachments) > 0
 	withInlineImg := len(params.InlineImages) > 0
