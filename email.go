@@ -42,11 +42,12 @@ type Sender struct {
 
 // Params contains all user-defined parameters to send emails
 type Params struct {
-	From         string   // From email field
-	To           []string // From email field
-	Subject      string   // Email subject
-	Attachments  []string // Attachments path
-	InlineImages []string // InlineImages images path
+	From            string   // From email field
+	To              []string // From email field
+	Subject         string   // Email subject
+	UnsubscribeLink string   // POST, https://support.google.com/mail/answer/81126 -> "Use one-click unsubscribe"
+	Attachments     []string // Attachments path
+	InlineImages    []string // InlineImages images path
 }
 
 // Logger is used to log errors and debug messages
@@ -211,6 +212,11 @@ func (em *Sender) buildMessage(text string, params Params) (message string, err 
 	message = addHeader(message, "From", params.From)
 	message = addHeader(message, "To", strings.Join(params.To, ","))
 	message = addHeader(message, "Subject", mime.BEncoding.Encode("utf-8", params.Subject))
+
+	if params.UnsubscribeLink != "" {
+		message = addHeader(message, "List-Unsubscribe-Post", "List-Unsubscribe=One-Click")
+		message = addHeader(message, "List-Unsubscribe", "<"+params.UnsubscribeLink+">")
+	}
 
 	withAttachments := len(params.Attachments) > 0
 	withInlineImg := len(params.InlineImages) > 0
