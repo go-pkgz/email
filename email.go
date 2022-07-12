@@ -46,6 +46,7 @@ type Params struct {
 	To              []string // From email field
 	Subject         string   // Email subject
 	UnsubscribeLink string   // POST, https://support.google.com/mail/answer/81126 -> "Use one-click unsubscribe"
+	InReplyTo       string   // Identifier for email group (category), used for email grouping
 	Attachments     []string // Attachments path
 	InlineImages    []string // InlineImages images path
 }
@@ -216,6 +217,10 @@ func (em *Sender) buildMessage(text string, params Params) (message string, err 
 	if params.UnsubscribeLink != "" {
 		message = addHeader(message, "List-Unsubscribe-Post", "List-Unsubscribe=One-Click")
 		message = addHeader(message, "List-Unsubscribe", "<"+params.UnsubscribeLink+">")
+	}
+
+	if params.InReplyTo != "" {
+		message = addHeader(message, "In-reply-to", "<"+params.InReplyTo+">")
 	}
 
 	withAttachments := len(params.Attachments) > 0
