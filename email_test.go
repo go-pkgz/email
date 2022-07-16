@@ -303,10 +303,11 @@ func TestEmail_buildMessageWithMIME(t *testing.T) {
 		To:              []string{"to@example.com"},
 		Subject:         "non-ascii symbols: Привет",
 		UnsubscribeLink: "https://example.com/unsubscribe",
+		InReplyTo:       "uuid@example.com",
 	})
 	require.NoError(t, err)
 	assert.Contains(t, msg, "Content-Transfer-Encoding: quoted-printable\nContent-Type: text/html; charset=\"UTF-8\"", msg)
-	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com\nSubject: =?utf-8?b?bm9uLWFzY2lpIHN5bWJvbHM6INCf0YDQuNCy0LXRgg==?=\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\nList-Unsubscribe: <https://example.com/unsubscribe>\nMIME-version: 1.0", msg)
+	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com\nSubject: =?utf-8?b?bm9uLWFzY2lpIHN5bWJvbHM6INCf0YDQuNCy0LXRgg==?=\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\nList-Unsubscribe: <https://example.com/unsubscribe>\nIn-reply-to: <uuid@example.com>\nMIME-version: 1.0", msg)
 	assert.Contains(t, msg, "\n\nthis is a test\r\n12345\r\n", msg)
 	assert.Contains(t, msg, "Date: ", msg)
 }
