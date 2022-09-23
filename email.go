@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/go-pkgz/email/pkg/smtpauth"
 )
 
 //go:generate moq -out mocks/smpt_client.go -pkg mocks -skip-ensure -fmt goimports . SMTPClient
@@ -35,6 +37,7 @@ type Sender struct {
 	starttls       bool   // StartTLS
 	smtpUserName   string // username
 	smtpPassword   string // password
+	authMethod     string // auth method
 	timeOut        time.Duration
 	contentCharset string
 	timeNow        func() time.Time
@@ -50,6 +53,12 @@ type Params struct {
 	Attachments     []string // Attachments path
 	InlineImages    []string // InlineImages images path
 }
+
+// List of supported authentication methods
+const (
+	AuthMethodPlain string = "PLAIN"
+	AuthMethodLogin string = "LOGIN"
+)
 
 // Logger is used to log errors and debug messages
 type Logger interface {
@@ -77,6 +86,7 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 		tls:            false,
 		smtpUserName:   "",
 		smtpPassword:   "",
+		authMethod:     AuthMethodPlain,
 		contentCharset: "UTF-8",
 		timeOut:        time.Second * 30,
 		timeNow:        time.Now,
@@ -120,8 +130,7 @@ func (em *Sender) Send(text string, params Params) error {
 		return errors.New("no recipients")
 	}
 
-	if em.smtpUserName != "" && em.smtpPassword != "" {
-		auth := smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
+	if auth := em.auth(); auth != nil {
 		if err := client.Auth(auth); err != nil {
 			return fmt.Errorf("failed to auth to smtp %s:%d, %w", em.host, em.port, err)
 		}
@@ -203,6 +212,24 @@ func (em *Sender) client() (c *smtp.Client, err error) {
 	}
 
 	return c, nil
+}
+
+// auth returns an smtp.Auth that implements SMTP authentication mechanism
+// depends on Sender settings.
+func (em *Sender) auth() smtp.Auth {
+	if em.smtpUserName == "" || em.smtpPassword == "" {
+		return nil // no auth
+	}
+
+	switch em.authMethod {
+	case AuthMethodPlain:
+		return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
+	case AuthMethodLogin:
+		return smtpauth.LoginAuth(em.smtpUserName, em.smtpPassword, em.host)
+	}
+
+	// default
+	return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
 }
 
 func (em *Sender) buildMessage(text string, params Params) (message string, err error) {
