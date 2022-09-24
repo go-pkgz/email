@@ -62,6 +62,13 @@ func Auth(smtpUserName, smtpPasswd string) Option {
 	}
 }
 
+// AuthMethod sets auth method
+func AuthMethod(meth string) Option {
+	return func(s *Sender) {
+		s.authMethod = meth
+	}
+}
+
 // TimeOut sets smtp timeout
 func TimeOut(timeOut time.Duration) Option {
 	return func(s *Sender) {
