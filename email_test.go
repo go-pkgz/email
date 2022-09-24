@@ -83,6 +83,26 @@ func TestEmail_Send(t *testing.T) {
 	assert.Equal(t, 0, len(smtpClient.CloseCalls()), "not called because quit is called")
 }
 
+func TestAuth(t *testing.T) {
+	var testcases = []struct {
+		meth  string
+		proto string
+	}{
+		{AuthMethodPlain, "PLAIN"},
+		{AuthMethodLogin, "LOGIN"},
+		{"foo", "PLAIN"},
+	}
+
+	for _, tc := range testcases {
+		s := NewSender("localhost", Auth("user", "pass"), AuthMethod(tc.meth))
+		auth := s.auth()
+		got, _, err := auth.Start(&smtp.ServerInfo{Name: "localhost"})
+
+		require.NoError(t, err)
+		assert.Equal(t, tc.proto, got)
+	}
+}
+
 func TestEmail_SendFailedAuth(t *testing.T) {
 	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
 	smtpClient := &mocks.SMTPClientMock{
