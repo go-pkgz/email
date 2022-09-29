@@ -61,7 +61,7 @@ See [go docs](https://pkg.go.dev/github.com/go-pkgz/email#Sender.Send) for `Send
 - Custom SMTP client (`smtp.Client` from stdlib) can be set by user with `SMTP` option. In this case it will be used instead of making a new smtp client internally.
 - Logger can be set with `Log` option. It should implement `email.Logger` interface with a single `Logf(format string, args ...interface{})` method. By default, "no logging" internal logger is used. This interface is compatible with the `go-pkgz/lgr` logger.
 - The library has no external dependencies, except for testing. It uses the stdlib `net/smtp` package.
-- SSL/TLS supported with `TLS` option. Pls note: this is not the same as `STARTTLS` (not supported) which is usually on port 587 vs SSL/TLS on port 465.
+- SSL/TLS supported with `TLS` option (usually on port 465) as well as with `STARTTLS` (usually on port 587).
 
 ## limitations
 
