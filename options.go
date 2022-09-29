@@ -65,7 +65,7 @@ func Auth(smtpUserName, smtpPasswd string) Option {
 // UseLoginAuth sets LOGIN auth method
 func UseLoginAuth() Option {
 	return func(s *Sender) {
-		s.authMethod = AuthMethodLogin
+		s.authMethod = authMethodLogin
 	}
 }
 

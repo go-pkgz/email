@@ -35,7 +35,7 @@ type Sender struct {
 	starttls       bool       // StartTLS
 	smtpUserName   string     // username
 	smtpPassword   string     // password
-	authMethod     AuthMethod // auth method
+	authMethod     authMethod // auth method
 	timeOut        time.Duration
 	contentCharset string
 	timeNow        func() time.Time
@@ -78,7 +78,7 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 		tls:            false,
 		smtpUserName:   "",
 		smtpPassword:   "",
-		authMethod:     AuthMethodPlain,
+		authMethod:     authMethodPlain,
 		contentCharset: "UTF-8",
 		timeOut:        time.Second * 30,
 		timeNow:        time.Now,
@@ -213,8 +213,8 @@ func (em *Sender) auth() smtp.Auth {
 		return nil // no auth
 	}
 
-	if em.authMethod == AuthMethodLogin {
-		return LoginAuth(em.smtpUserName, em.smtpPassword, em.host)
+	if em.authMethod == authMethodLogin {
+		return newLoginAuth(em.smtpUserName, em.smtpPassword, em.host)
 	}
 	return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
 }

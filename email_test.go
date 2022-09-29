@@ -36,7 +36,7 @@ func TestEmail_New(t *testing.T) {
 	assert.Equal(t, 123, s.port)
 	assert.Equal(t, "user", s.smtpUserName)
 	assert.Equal(t, "pass", s.smtpPassword)
-	assert.Equal(t, AuthMethodPlain, s.authMethod)
+	assert.Equal(t, authMethodPlain, s.authMethod)
 	assert.Equal(t, time.Second, s.timeOut)
 	assert.Equal(t, "text/html", s.contentType)
 	assert.Equal(t, "blah", s.contentCharset)

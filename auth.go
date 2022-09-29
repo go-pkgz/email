@@ -5,28 +5,28 @@ import (
 	"net/smtp"
 )
 
-// AuthMethod is SMTP authentication method
-type AuthMethod string
+// authMethod is SMTP authentication method
+type authMethod string
 
 // List of supported authentication methods
 const (
-	AuthMethodPlain AuthMethod = "PLAIN"
-	AuthMethodLogin AuthMethod = "LOGIN"
+	authMethodPlain authMethod = "PLAIN"
+	authMethodLogin authMethod = "LOGIN"
 )
 
-// LoginAuth returns smtp.Auth that implements the LOGIN authentication
+// newLoginAuth returns smtp.Auth that implements the LOGIN authentication
 // mechanism as defined in the LOGIN SASL Mechanism document,
 // https://www.ietf.org/archive/id/draft-murchison-sasl-login-00.txt.
 // The returned smtp.Auth uses the given username and password to authenticate
 // to the host.
 //
-// LoginAuth will only send the credentials if the connection is using TLS
+// LOGIN will only send the credentials if the connection is using TLS
 // or is connected to localhost. Otherwise authentication will fail with an
 // error, without sending the credentials.
 //
 // LOGIN is described as obsolete in the SASL Mechanisms document
 // but the mechanism is still in use, e.g. in Office 365 and Outlook.com.
-func LoginAuth(usr, pwd, host string) smtp.Auth {
+func newLoginAuth(usr, pwd, host string) smtp.Auth {
 	return &loginAuth{usr, pwd, host}
 }
 

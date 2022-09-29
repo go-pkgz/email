@@ -10,7 +10,7 @@ func TestLoginAuth(t *testing.T) {
 	user := "user"
 	password := "password"
 	server := "servername"
-	auth := LoginAuth(user, password, server)
+	auth := newLoginAuth(user, password, server)
 
 	mech, resp, err := auth.Start(&smtp.ServerInfo{Name: server, TLS: true})
 	if err != nil {
@@ -67,7 +67,7 @@ func TestLoginAuth_Start(t *testing.T) {
 	}
 
 	for i, tc := range testcases {
-		auth := LoginAuth("foo", "bar", tc.authName)
+		auth := newLoginAuth("foo", "bar", tc.authName)
 		_, _, err := auth.Start(tc.server)
 		got := ""
 		if err != nil {
