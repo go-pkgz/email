@@ -1,4 +1,3 @@
-// Implementation of additional SMTP authentication mechanisms.
 package email
 
 import (
@@ -6,6 +5,7 @@ import (
 	"net/smtp"
 )
 
+// AuthMethod is SMTP authentication method
 type AuthMethod string
 
 // List of supported authentication methods
@@ -40,7 +40,7 @@ func isLocalhost(name string) bool {
 	return name == "localhost" || name == "127.0.0.1" || name == "::1"
 }
 
-func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
+func (a *loginAuth) Start(server *smtp.ServerInfo) (proto string, toServer []byte, err error) {
 	if !server.TLS && !isLocalhost(server.Name) {
 		return "", nil, errors.New("unencrypted connection")
 	}
@@ -51,7 +51,7 @@ func (a *loginAuth) Start(server *smtp.ServerInfo) (string, []byte, error) {
 	return "LOGIN", []byte(a.user), nil
 }
 
-func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
+func (a *loginAuth) Next(fromServer []byte, more bool) (toServer []byte, err error) {
 	if more {
 		return []byte(a.password), nil
 	}
