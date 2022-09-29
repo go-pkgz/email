@@ -213,14 +213,9 @@ func (em *Sender) auth() smtp.Auth {
 		return nil // no auth
 	}
 
-	switch em.authMethod {
-	case AuthMethodPlain:
-		return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
-	case AuthMethodLogin:
+	if em.authMethod == AuthMethodLogin {
 		return LoginAuth(em.smtpUserName, em.smtpPassword, em.host)
 	}
-
-	// default
 	return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
 }
 
