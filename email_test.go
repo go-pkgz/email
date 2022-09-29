@@ -25,8 +25,8 @@ func TestEmail_New(t *testing.T) {
 	}}
 
 	s := NewSender("localhost", ContentType("text/html"), Port(123),
-		TLS(true), STARTTLS(true), Auth("user", "pass"), AuthMethod(AuthMethodPlain),
-		TimeOut(time.Second), Log(logger), Charset("blah"),
+		TLS(true), STARTTLS(true), Auth("user", "pass"), TimeOut(time.Second),
+		Log(logger), Charset("blah"),
 	)
 	require.NotNil(t, s)
 	assert.Equal(t, "[INFO] new email sender created with host: localhost:123, tls: true, username: \"user\", timeout: 1s, content type: \"text/html\", charset: \"blah\"",
@@ -83,24 +83,14 @@ func TestEmail_Send(t *testing.T) {
 	assert.Equal(t, 0, len(smtpClient.CloseCalls()), "not called because quit is called")
 }
 
-func TestAuth(t *testing.T) {
-	var testcases = []struct {
-		meth  string
-		proto string
-	}{
-		{AuthMethodPlain, "PLAIN"},
-		{AuthMethodLogin, "LOGIN"},
-		{"foo", "PLAIN"},
-	}
+func TestEmail_LoginAuth(t *testing.T) {
+	s := NewSender("localhost", Auth("user", "pass"), UseLoginAuth())
+	auth := s.auth()
+	proto, _, err := auth.Start(&smtp.ServerInfo{Name: "localhost"})
 
-	for _, tc := range testcases {
-		s := NewSender("localhost", Auth("user", "pass"), AuthMethod(tc.meth))
-		auth := s.auth()
-		got, _, err := auth.Start(&smtp.ServerInfo{Name: "localhost"})
+	require.NoError(t, err)
+	assert.Equal(t, "LOGIN", proto)
 
-		require.NoError(t, err)
-		assert.Equal(t, tc.proto, got)
-	}
 }
 
 func TestEmail_SendFailedAuth(t *testing.T) {

@@ -6,6 +6,14 @@ import (
 	"net/smtp"
 )
 
+type AuthMethod string
+
+// List of supported authentication methods
+const (
+	AuthMethodPlain AuthMethod = "PLAIN"
+	AuthMethodLogin AuthMethod = "LOGIN"
+)
+
 // LoginAuth returns smtp.Auth that implements the LOGIN authentication
 // mechanism as defined in the LOGIN SASL Mechanism document,
 // https://www.ietf.org/archive/id/draft-murchison-sasl-login-00.txt.

@@ -62,10 +62,10 @@ func Auth(smtpUserName, smtpPasswd string) Option {
 	}
 }
 
-// AuthMethod sets auth method
-func AuthMethod(meth string) Option {
+// UseLoginAuth sets LOGIN auth method
+func UseLoginAuth() Option {
 	return func(s *Sender) {
-		s.authMethod = meth
+		s.authMethod = AuthMethodLogin
 	}
 }
 

@@ -28,14 +28,14 @@ import (
 type Sender struct {
 	smtpClient     SMTPClient
 	logger         Logger
-	host           string // SMTP host
-	port           int    // SMTP port
-	contentType    string // Content type, optional. Will trigger MIME and Content-Type headers
-	tls            bool   // TLS auth
-	starttls       bool   // StartTLS
-	smtpUserName   string // username
-	smtpPassword   string // password
-	authMethod     string // auth method
+	host           string     // SMTP host
+	port           int        // SMTP port
+	contentType    string     // Content type, optional. Will trigger MIME and Content-Type headers
+	tls            bool       // TLS auth
+	starttls       bool       // StartTLS
+	smtpUserName   string     // username
+	smtpPassword   string     // password
+	authMethod     AuthMethod // auth method
 	timeOut        time.Duration
 	contentCharset string
 	timeNow        func() time.Time
@@ -51,12 +51,6 @@ type Params struct {
 	Attachments     []string // Attachments path
 	InlineImages    []string // InlineImages images path
 }
-
-// List of supported authentication methods
-const (
-	AuthMethodPlain string = "PLAIN"
-	AuthMethodLogin string = "LOGIN"
-)
 
 // Logger is used to log errors and debug messages
 type Logger interface {
