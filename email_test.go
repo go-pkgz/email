@@ -84,13 +84,12 @@ func TestEmail_Send(t *testing.T) {
 }
 
 func TestEmail_LoginAuth(t *testing.T) {
-	s := NewSender("localhost", Auth("user", "pass"), UseLoginAuth())
+	s := NewSender("localhost", Auth("user", "pass"), LoginAuth())
 	auth := s.auth()
 	proto, _, err := auth.Start(&smtp.ServerInfo{Name: "localhost"})
 
 	require.NoError(t, err)
 	assert.Equal(t, "LOGIN", proto)
-
 }
 
 func TestEmail_SendFailedAuth(t *testing.T) {
