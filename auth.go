@@ -1,5 +1,5 @@
 // Implementation of additional SMTP authentication mechanisms.
-package smtpauth
+package email
 
 import (
 	"errors"

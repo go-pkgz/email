@@ -1,4 +1,4 @@
-package smtpauth
+package email
 
 import (
 	"bytes"

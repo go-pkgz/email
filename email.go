@@ -19,8 +19,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/go-pkgz/email/pkg/smtpauth"
 )
 
 //go:generate moq -out mocks/smpt_client.go -pkg mocks -skip-ensure -fmt goimports . SMTPClient
@@ -225,7 +223,7 @@ func (em *Sender) auth() smtp.Auth {
 	case AuthMethodPlain:
 		return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
 	case AuthMethodLogin:
-		return smtpauth.LoginAuth(em.smtpUserName, em.smtpPassword, em.host)
+		return LoginAuth(em.smtpUserName, em.smtpPassword, em.host)
 	}
 
 	// default
