@@ -24,7 +24,7 @@ err := client.Send("<html>some content, foo bar</html>",
 - `TLS`: Use TLS SMTP (default: false)
 - `STARTTLS`: Use STARTTLS (default: false)
 - `Auth(user, password)`: Username and password for SMTP authentication (default: empty, no authentication)
-- `LoginAuth`: Use LOGIN mechanism for SMTP authentication, e.g. it's relevant for Office 365 and Outlook.com
+- `LoginAuth`: Use [LOGIN mechanism](https://www.ietf.org/archive/id/draft-murchison-sasl-login-00.txt) instead of PLAIN mechanism for SMTP authentication, e.g. this is relevant for Office 365 and Outlook.com
 - `ContentType`: Content type for the email (default: "text/plain")
 - `Charset`: Charset for the email (default: "utf-8")
 - `TimeOut`: Timeout for the SMTP connection (default: 30 seconds)
