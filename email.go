@@ -28,13 +28,14 @@ import (
 type Sender struct {
 	smtpClient     SMTPClient
 	logger         Logger
-	host           string // SMTP host
-	port           int    // SMTP port
-	contentType    string // Content type, optional. Will trigger MIME and Content-Type headers
-	tls            bool   // TLS auth
-	starttls       bool   // StartTLS
-	smtpUserName   string // username
-	smtpPassword   string // password
+	host           string     // SMTP host
+	port           int        // SMTP port
+	contentType    string     // Content type, optional. Will trigger MIME and Content-Type headers
+	tls            bool       // TLS auth
+	starttls       bool       // StartTLS
+	smtpUserName   string     // username
+	smtpPassword   string     // password
+	authMethod     authMethod // auth method
 	timeOut        time.Duration
 	contentCharset string
 	timeNow        func() time.Time
@@ -77,6 +78,7 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 		tls:            false,
 		smtpUserName:   "",
 		smtpPassword:   "",
+		authMethod:     authMethodPlain,
 		contentCharset: "UTF-8",
 		timeOut:        time.Second * 30,
 		timeNow:        time.Now,
@@ -120,8 +122,7 @@ func (em *Sender) Send(text string, params Params) error {
 		return errors.New("no recipients")
 	}
 
-	if em.smtpUserName != "" && em.smtpPassword != "" {
-		auth := smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
+	if auth := em.auth(); auth != nil {
 		if err := client.Auth(auth); err != nil {
 			return fmt.Errorf("failed to auth to smtp %s:%d, %w", em.host, em.port, err)
 		}
@@ -203,6 +204,19 @@ func (em *Sender) client() (c *smtp.Client, err error) {
 	}
 
 	return c, nil
+}
+
+// auth returns an smtp.Auth that implements SMTP authentication mechanism
+// depends on Sender settings.
+func (em *Sender) auth() smtp.Auth {
+	if em.smtpUserName == "" || em.smtpPassword == "" {
+		return nil // no auth
+	}
+
+	if em.authMethod == authMethodLogin {
+		return newLoginAuth(em.smtpUserName, em.smtpPassword, em.host)
+	}
+	return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
 }
 
 func (em *Sender) buildMessage(text string, params Params) (message string, err error) {

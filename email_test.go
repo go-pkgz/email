@@ -36,6 +36,7 @@ func TestEmail_New(t *testing.T) {
 	assert.Equal(t, 123, s.port)
 	assert.Equal(t, "user", s.smtpUserName)
 	assert.Equal(t, "pass", s.smtpPassword)
+	assert.Equal(t, authMethodPlain, s.authMethod)
 	assert.Equal(t, time.Second, s.timeOut)
 	assert.Equal(t, "text/html", s.contentType)
 	assert.Equal(t, "blah", s.contentCharset)
@@ -80,6 +81,15 @@ func TestEmail_Send(t *testing.T) {
 	assert.Equal(t, 1, len(smtpClient.DataCalls()))
 
 	assert.Equal(t, 0, len(smtpClient.CloseCalls()), "not called because quit is called")
+}
+
+func TestEmail_LoginAuth(t *testing.T) {
+	s := NewSender("localhost", Auth("user", "pass"), LoginAuth())
+	auth := s.auth()
+	proto, _, err := auth.Start(&smtp.ServerInfo{Name: "localhost"})
+
+	require.NoError(t, err)
+	assert.Equal(t, "LOGIN", proto)
 }
 
 func TestEmail_SendFailedAuth(t *testing.T) {
