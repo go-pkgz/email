@@ -184,25 +184,25 @@ func TestEmail_SendFailedRCPTO(t *testing.T) {
 
 func TestEmail_SendFailedMakeClient(t *testing.T) {
 	{
-		s := NewSender("127.0.0.2", Port(12345), TimeOut(time.Millisecond*200))
+		s := NewSender("198.18.0.254", Port(12345), TimeOut(time.Millisecond*200))
 		err := s.Send("some text", Params{
 			From:    "from@example.com",
 			To:      []string{"to@example.com"},
 			Subject: "subj",
 		})
 		require.Error(t, err, "failed to make smtp client")
-		assert.Contains(t, err.Error(),
-			"failed to make smtp client: timeout connecting to 127.0.0.2:12345:")
+		assert.Contains(t, err.Error(), "i/o timeout")
 	}
 
 	{
-		s := NewSender("127.0.0.1", Port(225), TLS(true), TimeOut(time.Millisecond*200))
+		s := NewSender("198.18.0.254", Port(225), TLS(true), TimeOut(time.Millisecond*200))
 		err := s.Send("some text", Params{
 			From:    "from@example.com",
 			To:      []string{"to@example.com"},
 			Subject: "subj",
 		})
-		require.Error(t, err)
+		require.Error(t, err, "failed to make smtp client")
+		assert.Contains(t, err.Error(), "i/o timeout")
 	}
 }
 
