@@ -25,11 +25,11 @@ func TestEmail_New(t *testing.T) {
 	}}
 
 	s := NewSender("localhost", ContentType("text/html"), Port(123),
-		TLS(true), STARTTLS(true), Auth("user", "pass"), TimeOut(time.Second),
+		TLS(true), STARTTLS(true), InsecureSkipVerify(true), Auth("user", "pass"), TimeOut(time.Second),
 		Log(logger), Charset("blah"),
 	)
 	require.NotNil(t, s)
-	assert.Equal(t, "[INFO] new email sender created with host: localhost:123, tls: true, username: \"user\", timeout: 1s, content type: \"text/html\", charset: \"blah\"",
+	assert.Equal(t, "[INFO] new email sender created with host: localhost:123, tls: true, insecureSkipVerify: true, username: \"user\", timeout: 1s, content type: \"text/html\", charset: \"blah\"",
 		logBuff.String())
 
 	assert.Equal(t, "localhost", s.host)
@@ -497,12 +497,12 @@ func TestWriteBodyFail(t *testing.T) {
 
 func TestSender_String(t *testing.T) {
 	e := NewSender("localhost", ContentType("text/html"), Port(2525), Auth("user", "pass"))
-	assert.Equal(t, `smtp://localhost:2525, auth:true, tls:false, starttls:false, timeout:30s, content-type:"text/html", charset:"UTF-8"`,
+	assert.Equal(t, `smtp://localhost:2525, auth:true, tls:false, starttls:false, insecureSkipVerify:false, timeout:30s, content-type:"text/html", charset:"UTF-8"`,
 		e.String())
 
 	e = NewSender("localhost", ContentType("text/html"), Port(2525), TLS(true),
-		STARTTLS(true), TimeOut(10*time.Second))
-	assert.Equal(t, `smtp://localhost:2525, auth:false, tls:true, starttls:true, timeout:10s, content-type:"text/html", charset:"UTF-8"`,
+		STARTTLS(true), InsecureSkipVerify(true), TimeOut(10*time.Second))
+	assert.Equal(t, `smtp://localhost:2525, auth:false, tls:true, starttls:true, insecureSkipVerify:true, timeout:10s, content-type:"text/html", charset:"UTF-8"`,
 		e.String())
 }
 
