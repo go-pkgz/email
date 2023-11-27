@@ -54,7 +54,7 @@ func STARTTLS(enabled bool) Option {
 	}
 }
 
-// Skip certificate verification support
+// InsecureSkipVerify skips certificate verification
 func InsecureSkipVerify(enabled bool) Option {
 	return func(s *Sender) {
 		s.insecureSkipVerify = enabled
