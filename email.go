@@ -173,7 +173,7 @@ func (em *Sender) String() string {
 func (em *Sender) client() (c *smtp.Client, err error) {
 	srvAddress := fmt.Sprintf("%s:%d", em.host, em.port)
 	tlsConf := &tls.Config{
-		InsecureSkipVerify: em.insecureSkipVerify,
+		InsecureSkipVerify: em.insecureSkipVerify, // #nosec G402
 		ServerName:         em.host,
 		MinVersion:         tls.VersionTLS12,
 	}
