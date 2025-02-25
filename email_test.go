@@ -21,7 +21,8 @@ import (
 func TestEmail_New(t *testing.T) {
 	logBuff := bytes.NewBuffer(nil)
 	logger := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
-		logBuff.WriteString(fmt.Sprintf(format, args...))
+		//nolint:gocritic // logger uses %v instead of %s using proposed fmt.Fprintf
+		_, _ = logBuff.WriteString(fmt.Sprintf(format, args...))
 	}}
 
 	s := NewSender("localhost", ContentType("text/html"), Port(123),
@@ -47,11 +48,11 @@ func TestEmail_New(t *testing.T) {
 func TestEmail_Send(t *testing.T) {
 	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
 	smtpClient := &mocks.SMTPClientMock{
-		AuthFunc:  func(auth smtp.Auth) error { return nil },
+		AuthFunc:  func(_ smtp.Auth) error { return nil },
 		CloseFunc: func() error { return nil },
 		MailFunc:  func(string) error { return nil },
 		QuitFunc:  func() error { return nil },
-		RcptFunc:  func(s string) error { return nil },
+		RcptFunc:  func(_ string) error { return nil },
 		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
 	}
 
@@ -95,11 +96,11 @@ func TestEmail_LoginAuth(t *testing.T) {
 func TestEmail_SendFailedAuth(t *testing.T) {
 	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
 	smtpClient := &mocks.SMTPClientMock{
-		AuthFunc:  func(auth smtp.Auth) error { return errors.New("auth error") },
+		AuthFunc:  func(_ smtp.Auth) error { return errors.New("auth error") },
 		CloseFunc: func() error { return nil },
 		MailFunc:  func(string) error { return nil },
 		QuitFunc:  func() error { return nil },
-		RcptFunc:  func(s string) error { return nil },
+		RcptFunc:  func(_ string) error { return nil },
 		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
 	}
 
@@ -119,11 +120,11 @@ func TestEmail_SendFailedAuth(t *testing.T) {
 func TestEmail_SendFailedQUIT(t *testing.T) {
 	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
 	smtpClient := &mocks.SMTPClientMock{
-		AuthFunc:  func(auth smtp.Auth) error { return nil },
+		AuthFunc:  func(_ smtp.Auth) error { return nil },
 		CloseFunc: func() error { return nil },
 		MailFunc:  func(string) error { return nil },
 		QuitFunc:  func() error { return errors.New("quit error") },
-		RcptFunc:  func(s string) error { return nil },
+		RcptFunc:  func(_ string) error { return nil },
 		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
 	}
 
@@ -141,11 +142,11 @@ func TestEmail_SendFailedQUIT(t *testing.T) {
 func TestEmail_SendFailedCLOSE(t *testing.T) {
 	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
 	smtpClient := &mocks.SMTPClientMock{
-		AuthFunc:  func(auth smtp.Auth) error { return nil },
+		AuthFunc:  func(_ smtp.Auth) error { return nil },
 		CloseFunc: func() error { return errors.New("close error") },
 		MailFunc:  func(string) error { return nil },
 		QuitFunc:  func() error { return errors.New("quit error") },
-		RcptFunc:  func(s string) error { return nil },
+		RcptFunc:  func(_ string) error { return nil },
 		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
 	}
 
@@ -163,11 +164,11 @@ func TestEmail_SendFailedCLOSE(t *testing.T) {
 func TestEmail_SendFailedRCPTO(t *testing.T) {
 	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
 	smtpClient := &mocks.SMTPClientMock{
-		AuthFunc:  func(auth smtp.Auth) error { return nil },
+		AuthFunc:  func(_ smtp.Auth) error { return nil },
 		CloseFunc: func() error { return nil },
 		MailFunc:  func(string) error { return nil },
 		QuitFunc:  func() error { return nil },
-		RcptFunc:  func(s string) error { return errors.New("RCPT error") },
+		RcptFunc:  func(_ string) error { return errors.New("RCPT error") },
 		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
 	}
 
@@ -211,11 +212,11 @@ func TestEmail_SendFailed(t *testing.T) {
 	{
 		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil), fail: true}
 		smtpClient := &mocks.SMTPClientMock{
-			AuthFunc:  func(auth smtp.Auth) error { return nil },
+			AuthFunc:  func(_ smtp.Auth) error { return nil },
 			CloseFunc: func() error { return nil },
 			MailFunc:  func(string) error { return nil },
 			QuitFunc:  func() error { return nil },
-			RcptFunc:  func(s string) error { return nil },
+			RcptFunc:  func(_ string) error { return nil },
 			DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
 		}
 
@@ -230,11 +231,11 @@ func TestEmail_SendFailed(t *testing.T) {
 	{
 		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
 		smtpClient := &mocks.SMTPClientMock{
-			AuthFunc:  func(auth smtp.Auth) error { return nil },
+			AuthFunc:  func(_ smtp.Auth) error { return nil },
 			CloseFunc: func() error { return nil },
 			MailFunc:  func(string) error { return errors.New("mail error") },
 			QuitFunc:  func() error { return nil },
-			RcptFunc:  func(s string) error { return nil },
+			RcptFunc:  func(_ string) error { return nil },
 			DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
 		}
 
@@ -249,11 +250,11 @@ func TestEmail_SendFailed(t *testing.T) {
 	{
 		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
 		smtpClient := &mocks.SMTPClientMock{
-			AuthFunc:  func(auth smtp.Auth) error { return nil },
+			AuthFunc:  func(_ smtp.Auth) error { return nil },
 			CloseFunc: func() error { return nil },
 			MailFunc:  func(string) error { return nil },
 			QuitFunc:  func() error { return nil },
-			RcptFunc:  func(s string) error { return nil },
+			RcptFunc:  func(_ string) error { return nil },
 			DataFunc:  func() (io.WriteCloser, error) { return wc, errors.New("data error") },
 		}
 
@@ -268,11 +269,11 @@ func TestEmail_SendFailed(t *testing.T) {
 	{
 		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
 		smtpClient := &mocks.SMTPClientMock{
-			AuthFunc:  func(auth smtp.Auth) error { return nil },
+			AuthFunc:  func(_ smtp.Auth) error { return nil },
 			CloseFunc: func() error { return nil },
 			MailFunc:  func(string) error { return nil },
 			QuitFunc:  func() error { return nil },
-			RcptFunc:  func(s string) error { return nil },
+			RcptFunc:  func(_ string) error { return nil },
 			DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
 		}
 

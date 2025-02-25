@@ -33,18 +33,18 @@ linters:
   enable:
     - dupl
     - exportloopref
-    - gas
     - gochecknoinits
     - gocritic
     - gocyclo
+    - gosec
     - gosimple
     - govet
     - ineffassign
-    - megacheck
     - misspell
     - nakedret
     - prealloc
     - revive
+    - staticcheck
     - stylecheck
     - typecheck
     - unconvert
