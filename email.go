@@ -366,4 +366,4 @@ func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition s
 
 type nopLogger struct{}
 
-func (nopLogger) Logf(format string, args ...interface{}) {}
+func (nopLogger) Logf(_ string, _ ...interface{}) {}
