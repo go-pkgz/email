@@ -84,6 +84,34 @@ func TestEmail_Send(t *testing.T) {
 	assert.Equal(t, 0, len(smtpClient.CloseCalls()), "not called because quit is called")
 }
 
+func TestEmail_SendWithDisplayName(t *testing.T) {
+	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+	smtpClient := &mocks.SMTPClientMock{
+		AuthFunc:  func(_ smtp.Auth) error { return nil },
+		CloseFunc: func() error { return nil },
+		MailFunc:  func(string) error { return nil },
+		QuitFunc:  func() error { return nil },
+		RcptFunc:  func(_ string) error { return nil },
+		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+	}
+
+	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient),
+		Auth("user", "pass"), TimeOut(time.Second))
+
+	s.timeNow = func() time.Time { return time.Date(2022, time.February, 10, 23, 33, 58, 0, time.UTC) }
+
+	err := s.Send("some text\n", Params{
+		From:    `"John Doe" <john@example.com>`,
+		To:      []string{"to@example.com"},
+		Subject: "subj",
+	})
+	require.NoError(t, err)
+
+	expBody := "From: \"John Doe\" <john@example.com>\nTo: to@example.com\nSubject: subj\nMIME-version: 1.0\nDate: Thu, 10 Feb 2022 23:33:58 +0000\nContent-Transfer-Encoding: quoted-printable\nContent-Type: text/html; charset=\"UTF-8\"\n\nsome text\r\n"
+	assert.Equal(t, expBody, wc.buff.String())
+	assert.Equal(t, "john@example.com", smtpClient.MailCalls()[0].From)
+}
+
 func TestEmail_LoginAuth(t *testing.T) {
 	s := NewSender("localhost", Auth("user", "pass"), LoginAuth())
 	auth := s.auth()
