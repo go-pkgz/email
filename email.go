@@ -17,6 +17,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -131,7 +132,7 @@ func (em *Sender) Send(text string, params Params) error {
 		}
 	}
 
-	if err := client.Mail(params.From); err != nil {
+	if err := client.Mail(extractEmailAddress(params.From)); err != nil {
 		return fmt.Errorf("bad from address %q: %w", params.From, err)
 	}
 
@@ -164,6 +165,17 @@ func (em *Sender) Send(text string, params Params) error {
 		quit = true
 	}
 	return nil
+}
+
+// extractEmailAddress extracts the email address from a string that may contain a display name.
+// For example, it converts `"John Doe" <john@example.com>` to `john@example.com`.
+// If parsing fails, it returns the original string unchanged.
+func extractEmailAddress(from string) string {
+	addr, err := mail.ParseAddress(from)
+	if err != nil {
+		return from
+	}
+	return addr.Address
 }
 
 func (em *Sender) String() string {
