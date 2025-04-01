@@ -17,6 +17,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -130,7 +131,7 @@ func (em *Sender) Send(text string, params Params) error {
 		}
 	}
 
-	if err := client.Mail(params.From); err != nil {
+	if err := client.Mail(extractEmailAddress(params.From)); err != nil {
 		return fmt.Errorf("bad from address %q: %w", params.From, err)
 	}
 
@@ -163,6 +164,15 @@ func (em *Sender) Send(text string, params Params) error {
 		quit = true
 	}
 	return nil
+}
+
+func extractEmailAddress(from string) string {
+	re := regexp.MustCompile(`<([^>]+)>`)
+	matches := re.FindStringSubmatch(from)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return from
 }
 
 func (em *Sender) String() string {
