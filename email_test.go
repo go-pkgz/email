@@ -560,3 +560,28 @@ func (wc *fakeWriterCloser) Write(p []byte) (n int, err error) {
 func (wc *fakeWriterCloser) Close() error {
 	return nil
 }
+
+func TestExtractEmailAddress(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"bare email", "john@example.com", "john@example.com"},
+		{"with display name quoted", `"John Doe" <john@example.com>`, "john@example.com"},
+		{"with display name unquoted", "John Doe <john@example.com>", "john@example.com"},
+		{"angle brackets only", "<john@example.com>", "john@example.com"},
+		{"with leading whitespace", "  john@example.com", "john@example.com"},
+		{"with trailing whitespace", "john@example.com  ", "john@example.com"},
+		{"display name with whitespace", "  \"John Doe\" <john@example.com>  ", "john@example.com"},
+		{"invalid email returns original", "not-an-email", "not-an-email"},
+		{"empty string returns original", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractEmailAddress(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
