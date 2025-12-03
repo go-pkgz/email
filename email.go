@@ -17,6 +17,7 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -171,7 +172,7 @@ func (em *Sender) String() string {
 }
 
 func (em *Sender) client() (c *smtp.Client, err error) {
-	srvAddress := fmt.Sprintf("%s:%d", em.host, em.port)
+	srvAddress := net.JoinHostPort(em.host, strconv.Itoa(em.port))
 	// #nosec G402
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: em.insecureSkipVerify, // #nosec G402

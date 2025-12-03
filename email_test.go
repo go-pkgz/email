@@ -21,8 +21,7 @@ import (
 func TestEmail_New(t *testing.T) {
 	logBuff := bytes.NewBuffer(nil)
 	logger := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
-		//nolint:gocritic // logger uses %v instead of %s using proposed fmt.Fprintf
-		_, _ = logBuff.WriteString(fmt.Sprintf(format, args...))
+		_, _ = fmt.Fprintf(logBuff, format, args...)
 	}}
 
 	s := NewSender("localhost", ContentType("text/html"), Port(123),
