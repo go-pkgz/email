@@ -43,7 +43,7 @@ func TestEmail_New(t *testing.T) {
 	assert.Equal(t, time.Second, s.timeOut)
 	assert.Equal(t, "text/html", s.contentType)
 	assert.Equal(t, "blah", s.contentCharset)
-	assert.Equal(t, true, s.tls)
+	assert.True(t, s.tls)
 	assert.True(t, s.starttls)
 }
 
@@ -73,17 +73,17 @@ func TestEmail_Send(t *testing.T) {
 	expBody := "From: from@example.com\nTo: to@example.com\nSubject: subj\nMIME-version: 1.0\nDate: Thu, 10 Feb 2022 23:33:58 +0000\nContent-Transfer-Encoding: quoted-printable\nContent-Type: text/html; charset=\"UTF-8\"\n\nsome text\r\n"
 	assert.Equal(t, expBody, wc.buff.String())
 
-	require.Equal(t, 1, len(smtpClient.MailCalls()))
+	require.Len(t, smtpClient.MailCalls(), 1)
 	assert.Equal(t, "from@example.com", smtpClient.MailCalls()[0].From)
 
-	require.Equal(t, 1, len(smtpClient.RcptCalls()))
+	require.Len(t, smtpClient.RcptCalls(), 1)
 	assert.Equal(t, "to@example.com", smtpClient.RcptCalls()[0].To)
 
-	assert.Equal(t, 1, len(smtpClient.AuthCalls()))
-	assert.Equal(t, 1, len(smtpClient.QuitCalls()))
-	assert.Equal(t, 1, len(smtpClient.DataCalls()))
+	assert.Len(t, smtpClient.AuthCalls(), 1)
+	assert.Len(t, smtpClient.QuitCalls(), 1)
+	assert.Len(t, smtpClient.DataCalls(), 1)
 
-	assert.Equal(t, 0, len(smtpClient.CloseCalls()), "not called because quit is called")
+	assert.Empty(t, smtpClient.CloseCalls(), "not called because quit is called")
 }
 
 func TestEmail_SendWithDisplayName(t *testing.T) {
@@ -142,9 +142,9 @@ func TestEmail_SendFailedAuth(t *testing.T) {
 		Subject: "subj",
 	})
 	require.EqualError(t, err, "failed to auth to smtp localhost:25, auth error")
-	assert.Equal(t, 1, len(smtpClient.AuthCalls()))
-	assert.Equal(t, 0, len(smtpClient.QuitCalls()))
-	assert.Equal(t, 1, len(smtpClient.CloseCalls()), "called because quit is not called before")
+	assert.Len(t, smtpClient.AuthCalls(), 1)
+	assert.Empty(t, smtpClient.QuitCalls())
+	assert.Len(t, smtpClient.CloseCalls(), 1, "called because quit is not called before")
 }
 
 func TestEmail_SendFailedQUIT(t *testing.T) {
@@ -165,8 +165,8 @@ func TestEmail_SendFailedQUIT(t *testing.T) {
 		Subject: "subj",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 1, len(smtpClient.QuitCalls()))
-	assert.Equal(t, 1, len(smtpClient.CloseCalls()))
+	assert.Len(t, smtpClient.QuitCalls(), 1)
+	assert.Len(t, smtpClient.CloseCalls(), 1)
 }
 
 func TestEmail_SendFailedCLOSE(t *testing.T) {
@@ -187,8 +187,8 @@ func TestEmail_SendFailedCLOSE(t *testing.T) {
 		Subject: "subj",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, 1, len(smtpClient.QuitCalls()))
-	assert.Equal(t, 1, len(smtpClient.CloseCalls()))
+	assert.Len(t, smtpClient.QuitCalls(), 1)
+	assert.Len(t, smtpClient.CloseCalls(), 1)
 }
 
 func TestEmail_SendFailedRCPTO(t *testing.T) {
@@ -208,9 +208,8 @@ func TestEmail_SendFailedRCPTO(t *testing.T) {
 		To:      []string{"to@example.com"},
 		Subject: "subj",
 	})
-	require.Error(t, err)
-	assert.EqualError(t, err, "bad to address [\"to@example.com\"]: RCPT error")
-	assert.Equal(t, 1, len(smtpClient.RcptCalls()))
+	require.EqualError(t, err, "bad to address [\"to@example.com\"]: RCPT error")
+	assert.Len(t, smtpClient.RcptCalls(), 1)
 }
 
 func TestEmail_SendFailedMakeClient(t *testing.T) {
@@ -421,7 +420,7 @@ func TestEmail_buildMessageWithMIMEAndWrongAttachments(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, "failed to write attachments: "+
 		"open does/not/exist/1.txt: no such file or directory", err.Error())
-	require.Equal(t, "", msg)
+	require.Empty(t, msg)
 
 	msg, err = e.buildMessage("<div>this is a test mail with attachments\\n12345</div>\\n", Params{
 		From:        "from@example.com",
@@ -432,7 +431,7 @@ func TestEmail_buildMessageWithMIMEAndWrongAttachments(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, "failed to write attachments: failed to read file type \"testdata/nullfile\": EOF",
 		err.Error())
-	require.Equal(t, "", msg)
+	require.Empty(t, msg)
 }
 
 func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
