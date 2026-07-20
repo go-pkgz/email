@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
+	"net/mail"
 	"net/smtp"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -330,6 +333,10 @@ func TestEmail_buildMessage(t *testing.T) {
 	assert.Contains(t, msg, "this is a test\r\n12345", msg)
 	assert.Contains(t, msg, "Date: ", msg)
 	assert.Contains(t, msg, "Content-Transfer-Encoding: quoted-printable", msg)
+
+	tree := parseMIMETree(t, msg)
+	assert.Equal(t, "text/plain", tree.mediaType)
+	assert.Empty(t, tree.children)
 }
 
 func TestEmail_buildMessageWithMIME(t *testing.T) {
@@ -367,7 +374,12 @@ func TestEmail_buildMessageWithMIMEAndAttachments(t *testing.T) {
 		Attachments: []string{"testdata/1.txt", "testdata/2.txt", "testdata/image.jpg"},
 	})
 	require.NoError(t, err)
-	assert.Contains(t, msg, "Content-Type", "multipart/mixed; boundary=", msg)
+	tree := parseMIMETree(t, msg)
+	require.Equal(t, "multipart/mixed", tree.mediaType)
+	body, ok := tree.firstChild("text/html")
+	require.True(t, ok, "html body part present under mixed")
+	assert.Empty(t, body.disposition)
+	assert.Len(t, tree.childrenByDisposition("attachment"), 3)
 	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"1.txt\"", msg)
 	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"2.txt\"", msg)
 	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"image.jpg\"", msg)
@@ -441,7 +453,15 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, msg, "MIME-version: 1.0", msg)
-	assert.Contains(t, msg, "Content-Type", "multipart/related; boundary=", msg)
+	tree := parseMIMETree(t, msg)
+	require.Equal(t, "multipart/related", tree.mediaType)
+	body, ok := tree.firstChild("text/html")
+	require.True(t, ok, "html body part present under related")
+	assert.Empty(t, body.disposition)
+	img, ok := tree.firstChild("image/jpeg")
+	require.True(t, ok, "inline image part present under related")
+	assert.Equal(t, "inline", img.disposition)
+	assert.Equal(t, "<image.jpg>", img.contentID)
 	assert.Contains(t, msg, "Content-Disposition: inline; filename=\"image.jpg\"", msg)
 	assert.Contains(t, msg, "Content-Id: <image.jpg>", msg)
 	assert.Contains(t, msg, "Content-Transfer-Encoding: base64", msg)
@@ -472,11 +492,21 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, msg, "MIME-version: 1.0", msg)
-	assert.Contains(t, msg, "Content-Type", "multipart/mixed; boundary=", msg)
+	tree := parseMIMETree(t, msg)
+	require.Equal(t, "multipart/mixed", tree.mediaType)
+	related, ok := tree.firstChild("multipart/related")
+	require.True(t, ok, "related subtree present under mixed")
+	htmlBody, ok := related.firstChild("text/html")
+	require.True(t, ok, "html body inside related")
+	assert.Empty(t, htmlBody.disposition)
+	img, ok := related.firstChild("image/jpeg")
+	require.True(t, ok, "inline image inside related, not directly under mixed")
+	assert.Equal(t, "inline", img.disposition)
+	assert.Equal(t, "<image.jpg>", img.contentID)
+	assert.Len(t, tree.childrenByDisposition("attachment"), 3)
 	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"1.txt\"", msg)
 	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"2.txt\"", msg)
 	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"image.jpg\"", msg)
-	assert.Contains(t, msg, "Content-Type", "multipart/related; boundary=", msg)
 	assert.Contains(t, msg, "Content-Disposition: inline; filename=\"image.jpg\"", msg)
 	assert.Contains(t, msg, "Content-Id: <image.jpg>", msg)
 	assert.Contains(t, msg, "Content-Transfer-Encoding: base64", msg)
@@ -584,4 +614,66 @@ func TestExtractEmailAddress(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// mimeNode is a parsed MIME part, used to assert message structure in tests
+type mimeNode struct {
+	mediaType   string
+	disposition string
+	contentID   string
+	children    []mimeNode
+}
+
+// firstChild returns the first direct child with the given media type
+func (n mimeNode) firstChild(mediaType string) (mimeNode, bool) {
+	for _, c := range n.children {
+		if c.mediaType == mediaType {
+			return c, true
+		}
+	}
+	return mimeNode{}, false
+}
+
+// childrenByDisposition returns the direct children with the given content-disposition
+func (n mimeNode) childrenByDisposition(disposition string) []mimeNode {
+	res := make([]mimeNode, 0, len(n.children))
+	for _, c := range n.children {
+		if c.disposition == disposition {
+			res = append(res, c)
+		}
+	}
+	return res
+}
+
+// parseMIMETree parses a raw email message and returns its MIME part tree,
+// failing the test if the message or any part is not well-formed
+func parseMIMETree(t *testing.T, raw string) mimeNode {
+	t.Helper()
+	m, err := mail.ReadMessage(strings.NewReader(raw))
+	require.NoError(t, err)
+	return readMIMENode(t, m.Header.Get("Content-Type"), "", "", m.Body)
+}
+
+func readMIMENode(t *testing.T, contentType, disposition, contentID string, body io.Reader) mimeNode {
+	t.Helper()
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	require.NoError(t, err)
+	node := mimeNode{mediaType: mediaType, disposition: disposition, contentID: contentID}
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		return node
+	}
+	mr := multipart.NewReader(body, params["boundary"])
+	for {
+		p, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		require.NoError(t, err)
+		disp := ""
+		if d := p.Header.Get("Content-Disposition"); d != "" {
+			disp, _, _ = mime.ParseMediaType(d)
+		}
+		node.children = append(node.children, readMIMENode(t, p.Header.Get("Content-Type"), disp, p.Header.Get("Content-Id"), p))
+	}
+	return node
 }
