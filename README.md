@@ -24,6 +24,8 @@ err := client.Send("<html>some content, foo bar</html>",
 - `TLS`: Use TLS SMTP (default: false)
 - `STARTTLS`: Use STARTTLS (default: false)
 - `InsecureSkipVerify`: skip certificate verification (default: false)
+- `HELOHost`: SMTP HELO/EHLO hostname (default: empty, greets as `localhost`). Some servers reject `localhost`,
+  e.g. Postfix with `reject_non_fqdn_helo_hostname`. Not applied to a custom client set with `SMTP`.
 - `Auth(user, password)`: Username and password for SMTP authentication (default: empty, no authentication)
 - `LoginAuth`: Use [LOGIN mechanism](https://www.ietf.org/archive/id/draft-murchison-sasl-login-00.txt) instead of PLAIN mechanism for SMTP authentication, e.g. this is relevant for Office 365 and Outlook.com
 - `ContentType`: Content type for the email (default: "text/plain")

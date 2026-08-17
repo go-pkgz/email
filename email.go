@@ -31,6 +31,7 @@ type Sender struct {
 	smtpClient         SMTPClient
 	logger             Logger
 	host               string     // SMTP host
+	heloHost           string     // SMTP HELO/EHLO host
 	port               int        // SMTP port
 	contentType        string     // content type, optional. Will trigger MIME and Content-Type headers
 	tls                bool       // TLS auth
@@ -91,9 +92,9 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 		opt(&res)
 	}
 
-	res.logger.Logf("[INFO] new email sender created with host: %s:%d, tls: %v, insecureSkipVerify: %v, username: %q, timeout: %v, "+
-		"content type: %q, charset: %q", smtpHost,
-		res.port, res.tls, res.insecureSkipVerify, res.smtpUserName, res.timeOut, res.contentType, res.contentCharset)
+	res.logger.Logf("[INFO] new email sender created with host: %s:%d, helo: %q, tls: %v, insecureSkipVerify: %v, username: %q, timeout: %v, "+
+		"content type: %q, charset: %q", smtpHost, res.port, res.effectiveHELOHost(),
+		res.tls, res.insecureSkipVerify, res.smtpUserName, res.timeOut, res.contentType, res.contentCharset)
 	return &res
 }
 
@@ -179,8 +180,19 @@ func extractEmailAddress(from string) string {
 }
 
 func (em *Sender) String() string {
-	return fmt.Sprintf("smtp://%s:%d, auth:%v, tls:%v, starttls:%v, insecureSkipVerify:%v, timeout:%v, content-type:%q, charset:%q",
-		em.host, em.port, em.smtpUserName != "", em.tls, em.starttls, em.insecureSkipVerify, em.timeOut, em.contentType, em.contentCharset)
+	return fmt.Sprintf("smtp://%s:%d, helo:%q, auth:%v, tls:%v, starttls:%v, insecureSkipVerify:%v, timeout:%v, content-type:%q, charset:%q",
+		em.host, em.port, em.effectiveHELOHost(), em.smtpUserName != "", em.tls, em.starttls, em.insecureSkipVerify,
+		em.timeOut, em.contentType, em.contentCharset)
+}
+
+func (em *Sender) effectiveHELOHost() string {
+	if em.smtpClient != nil {
+		return "client-managed"
+	}
+	if em.heloHost == "" {
+		return "localhost"
+	}
+	return em.heloHost
 }
 
 func (em *Sender) client() (c *smtp.Client, err error) {
@@ -200,6 +212,10 @@ func (em *Sender) client() (c *smtp.Client, err error) {
 		if c, err = smtp.NewClient(conn, em.host); err != nil {
 			return nil, fmt.Errorf("failed to make smtp client for %s: %w", srvAddress, err)
 		}
+		if err = em.hello(c); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
 		return c, nil
 	}
 
@@ -212,14 +228,29 @@ func (em *Sender) client() (c *smtp.Client, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial: %w", err)
 	}
+	if err = em.hello(c); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
 
 	if em.starttls {
 		if err = c.StartTLS(tlsConf); err != nil {
+			_ = c.Close()
 			return nil, fmt.Errorf("failed to start tls: %w", err)
 		}
 	}
 
 	return c, nil
+}
+
+func (em *Sender) hello(client *smtp.Client) error {
+	if em.heloHost == "" {
+		return nil
+	}
+	if err := client.Hello(em.heloHost); err != nil {
+		return fmt.Errorf("failed to send SMTP greeting: %w", err)
+	}
+	return nil
 }
 
 // auth returns an smtp.Auth that implements SMTP authentication mechanism
