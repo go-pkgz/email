@@ -411,14 +411,13 @@ func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string
 		}
 	}()
 
-	// we need first 512 bytes to detect file type
+	// we need first 512 bytes to detect file type, an empty file is fine and detected as plain text
 	fTypeBuff := make([]byte, 512)
-	if _, err = file.Read(fTypeBuff); err != nil {
+	n, err := file.Read(fTypeBuff)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("failed to read file type %q: %w", attachment, err)
 	}
-
-	// remove null bytes in case file less than 512 bytes
-	fTypeBuff = bytes.Trim(fTypeBuff, "\x00")
+	fTypeBuff = fTypeBuff[:n] // file can be shorter than the buffer
 	fName := filepath.Base(attachment)
 	header := textproto.MIMEHeader{}
 	header.Set("Content-Type", http.DetectContentType(fTypeBuff)+"; name=\""+fName+"\"")

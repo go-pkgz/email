@@ -885,16 +885,29 @@ func TestEmail_buildMessageWithMIMEAndWrongAttachments(t *testing.T) {
 		"open does/not/exist/1.txt: no such file or directory", err.Error())
 	require.Nil(t, msg)
 
-	msg, err = e.buildMessage("<div>this is a test mail with attachments\\n12345</div>\\n", Params{
+}
+
+func TestEmail_buildMessageWithEmptyAttachment(t *testing.T) {
+	e := NewSender("localhost", ContentType("text/html"))
+
+	msg, err := e.buildMessage("<div>this is a test mail with an empty attachment</div>", Params{
 		From:        "from@example.com",
 		To:          []string{"to@example.com"},
 		Subject:     "test email with attachments",
-		Attachments: []string{"testdata/nullfile"},
+		Attachments: []string{"testdata/nullfile", "testdata/1.txt"},
 	})
-	require.Error(t, err)
-	require.Equal(t, "failed to write attachments: failed to read file type \"testdata/nullfile\": EOF",
-		err.Error())
-	require.Nil(t, msg)
+	require.NoError(t, err, "an empty file is a valid attachment")
+	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"nullfile\"", msg.String())
+
+	tree := parseMIMETree(t, msg.String())
+	attachments := tree.childrenByDisposition("attachment")
+	require.Len(t, attachments, 2)
+	assert.Empty(t, attachments[0].content, "the empty file makes an empty part")
+	assert.Equal(t, "text/plain", attachments[0].mediaType)
+
+	fData, err := os.ReadFile("testdata/1.txt")
+	require.NoError(t, err)
+	assert.Equal(t, fData, attachments[1].content, "the attachment after the empty one is intact")
 }
 
 func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
