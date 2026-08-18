@@ -104,22 +104,15 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 func (em *Sender) Send(text string, params Params) error {
 	em.logger.Logf("[DEBUG] send %q to %v", text, params.To)
 
-	client := em.smtpClient
-	if client == nil { // if client not set make new net/smtp
-		c, err := em.client()
-		if err != nil {
-			return fmt.Errorf("failed to make smtp client: %w", err)
-		}
-		client = c
-	}
+	client := em.smtpClient // set by the SMTP option, nil when Send makes its own client below
 
 	var quit bool
 	defer func() {
 		if quit || client == nil { // quit set if Quit() call passed because it's closing connection as well.
 			return
 		}
-		if err := client.Close(); err != nil {
-			em.logger.Logf("[WARN] can't close smtp connection, %v", err)
+		if e := client.Close(); e != nil {
+			em.logger.Logf("[WARN] can't close smtp connection, %v", e)
 		}
 	}()
 
@@ -127,18 +120,32 @@ func (em *Sender) Send(text string, params Params) error {
 		return errors.New("no recipients")
 	}
 
+	// message is built before the connection is made, this way a bad message doesn't reach the server at all
+	msg, err := em.buildMessage(text, params)
+	if err != nil {
+		return fmt.Errorf("can't make email message: %w", err)
+	}
+
+	if client == nil {
+		c, e := em.client()
+		if e != nil {
+			return fmt.Errorf("failed to make smtp client: %w", e)
+		}
+		client = c
+	}
+
 	if auth := em.auth(); auth != nil {
-		if err := client.Auth(auth); err != nil {
+		if err = client.Auth(auth); err != nil {
 			return fmt.Errorf("failed to auth to smtp %s:%d, %w", em.host, em.port, err)
 		}
 	}
 
-	if err := client.Mail(extractEmailAddress(params.From)); err != nil {
+	if err = client.Mail(extractEmailAddress(params.From)); err != nil {
 		return fmt.Errorf("bad from address %q: %w", params.From, err)
 	}
 
 	for _, rcpt := range params.To {
-		if err := client.Rcpt(extractEmailAddress(rcpt)); err != nil {
+		if err = client.Rcpt(extractEmailAddress(rcpt)); err != nil {
 			return fmt.Errorf("bad to address %q: %w", params.To, err)
 		}
 	}
@@ -148,16 +155,13 @@ func (em *Sender) Send(text string, params Params) error {
 		return fmt.Errorf("can't make email writer: %w", err)
 	}
 
-	msg, err := em.buildMessage(text, params)
-	if err != nil {
-		return fmt.Errorf("can't make email message: %w", err)
-	}
 	buf := bytes.NewBufferString(msg)
 	if _, err = buf.WriteTo(writer); err != nil {
 		return fmt.Errorf("failed to send email body to %q: %w", params.To, err)
 	}
+	// closing the writer reports the final response to the DATA command, i.e. the actual delivery result
 	if err = writer.Close(); err != nil {
-		em.logger.Logf("[WARN] can't close smtp body writer, %v", err)
+		return fmt.Errorf("failed to send email to %q: %w", params.To, err)
 	}
 
 	if err = client.Quit(); err != nil {
@@ -266,7 +270,40 @@ func (em *Sender) auth() smtp.Auth {
 	return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
 }
 
+// validateHeaders rejects user-provided values which would break out of the header they are put into.
+// CR and LF allow injecting arbitrary headers and message body, i.e. sending a different email than the caller intended.
+func (params Params) validateHeaders() error {
+	check := func(name, value string) error {
+		if strings.ContainsAny(value, "\r\n") {
+			return fmt.Errorf("invalid %s header value %q: contains CR or LF", name, value)
+		}
+		return nil
+	}
+
+	for _, h := range [][2]string{
+		{"From", params.From},
+		{"Subject", params.Subject},
+		{"List-Unsubscribe", params.UnsubscribeLink},
+		{"In-reply-to", params.InReplyTo},
+	} {
+		if err := check(h[0], h[1]); err != nil {
+			return err
+		}
+	}
+
+	for _, to := range params.To {
+		if err := check("To", to); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (em *Sender) buildMessage(text string, params Params) (message string, err error) {
+	if e := params.validateHeaders(); e != nil {
+		return "", e
+	}
+
 	addHeader := func(msg, h, v string) string {
 		msg += fmt.Sprintf("%s: %s\n", h, v)
 		return msg
@@ -352,53 +389,7 @@ func (em *Sender) writeBody(wc io.WriteCloser, text string) error {
 
 func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition string) error {
 	for _, attachment := range files {
-		file, err := os.Open(filepath.Clean(attachment))
-		if err != nil {
-			return err
-		}
-
-		// we need first 512 bytes to detect file type
-		fTypeBuff := make([]byte, 512)
-		_, err = file.Read(fTypeBuff)
-		if err != nil {
-			return fmt.Errorf("failed to read file type %q: %w", attachment, err)
-		}
-
-		// remove null bytes in case file less than 512 bytes
-		fTypeBuff = bytes.Trim(fTypeBuff, "\x00")
-		fName := filepath.Base(attachment)
-		header := textproto.MIMEHeader{}
-		header.Set("Content-Type", http.DetectContentType(fTypeBuff)+"; name=\""+fName+"\"")
-		header.Set("Content-Transfer-Encoding", "base64")
-
-		switch disposition {
-		case "attachment":
-			header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fName))
-		case "inline":
-			header.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", fName))
-			header.Set("Content-ID", fmt.Sprintf("<%s>", fName))
-		}
-
-		writer, err := mp.CreatePart(header)
-		if err != nil {
-			return err
-		}
-
-		// set reader offset at the beginning of the file because we read first 512 bytes
-		_, err = file.Seek(0, io.SeekStart)
-		if err != nil {
-			return err
-		}
-
-		encoder := base64.NewEncoder(base64.StdEncoding, writer)
-		if _, err := io.Copy(encoder, file); err != nil {
-			return err
-		}
-		if err := encoder.Close(); err != nil {
-			return err
-		}
-
-		if err := file.Close(); err != nil {
+		if err := em.writeFile(mp, attachment, disposition); err != nil {
 			return err
 		}
 	}
@@ -406,6 +397,56 @@ func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition s
 		return err
 	}
 	return nil
+}
+
+// writeFile adds a single file as a mime part, the file is closed on every return path
+func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string) (err error) {
+	file, err := os.Open(filepath.Clean(attachment))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if e := file.Close(); e != nil && err == nil {
+			err = e
+		}
+	}()
+
+	// we need first 512 bytes to detect file type
+	fTypeBuff := make([]byte, 512)
+	if _, err = file.Read(fTypeBuff); err != nil {
+		return fmt.Errorf("failed to read file type %q: %w", attachment, err)
+	}
+
+	// remove null bytes in case file less than 512 bytes
+	fTypeBuff = bytes.Trim(fTypeBuff, "\x00")
+	fName := filepath.Base(attachment)
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Type", http.DetectContentType(fTypeBuff)+"; name=\""+fName+"\"")
+	header.Set("Content-Transfer-Encoding", "base64")
+
+	switch disposition {
+	case "attachment":
+		header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fName))
+	case "inline":
+		header.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", fName))
+		header.Set("Content-ID", fmt.Sprintf("<%s>", fName))
+	}
+
+	writer, err := mp.CreatePart(header)
+	if err != nil {
+		return err
+	}
+
+	// set reader offset at the beginning of the file because we read first 512 bytes
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+
+	encoder := base64.NewEncoder(base64.StdEncoding, writer)
+	if _, err = io.Copy(encoder, file); err != nil {
+		return err
+	}
+	return encoder.Close()
 }
 
 type nopLogger struct{}

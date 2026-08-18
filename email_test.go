@@ -274,6 +274,45 @@ func TestEmail_ClientSTARTTLSFailureClosesConnection(t *testing.T) {
 	waitSMTPTestServer(t, done)
 }
 
+func TestEmail_SendRejectedAfterData(t *testing.T) {
+	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
+		if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
+			return err
+		}
+		reader := bufio.NewReader(conn)
+		for _, response := range []string{"250 smtp.example.net", "250 sender accepted", "250 recipient accepted", "354 send the message"} {
+			if _, err := readSMTPCommand(reader); err != nil {
+				return err
+			}
+			if err := writeSMTPResponse(conn, response); err != nil {
+				return err
+			}
+		}
+
+		for { // read the message until the terminating dot
+			line, err := readSMTPCommand(reader)
+			if err != nil {
+				return err
+			}
+			if line == "." {
+				break
+			}
+		}
+		return writeSMTPResponse(conn, "552 message rejected")
+	})
+
+	sender := NewSender(host, Port(port), ContentType("text/html"), TimeOut(3*time.Second))
+	err := sender.Send("some text\n", Params{
+		From:    "from@example.com",
+		To:      []string{"to@example.com"},
+		Subject: "subj",
+	})
+	require.Error(t, err, "rejection of the message by the server has to reach the caller")
+	assert.Contains(t, err.Error(), "552")
+	assert.Contains(t, err.Error(), "message rejected")
+	waitSMTPTestServer(t, done)
+}
+
 func TestEmail_ClientSTARTTLSReusesHELOHost(t *testing.T) {
 	serverTLS := smtpTestTLSConfig(t)
 	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
@@ -624,7 +663,124 @@ func TestEmail_SendFailed(t *testing.T) {
 			Subject: "subj",
 		})
 		require.EqualError(t, err, "no recipients")
+		assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
 	}
+}
+
+func TestEmail_SendRejectedBody(t *testing.T) {
+	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil), closeErr: errors.New("552 5.3.4 message too big")}
+	smtpClient := &mocks.SMTPClientMock{
+		AuthFunc:  func(_ smtp.Auth) error { return nil },
+		CloseFunc: func() error { return nil },
+		MailFunc:  func(string) error { return nil },
+		QuitFunc:  func() error { return nil },
+		RcptFunc:  func(_ string) error { return nil },
+		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+	}
+
+	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+	err := s.Send("some text\n", Params{
+		From:    "from@example.com",
+		To:      []string{"to@example.com"},
+		Subject: "subj",
+	})
+	require.EqualError(t, err, "failed to send email to [\"to@example.com\"]: 552 5.3.4 message too big")
+	assert.True(t, wc.closed)
+	assert.Empty(t, smtpClient.QuitCalls(), "no quit for a message the server didn't accept")
+	assert.Len(t, smtpClient.CloseCalls(), 1, "connection closed by the deferred cleanup")
+}
+
+func TestEmail_SendHeaderInjection(t *testing.T) {
+	injected := "victim@example.net (x\r\nSubject: Security notice\r\nContent-Type: text/html\r\n\r\n<a href=\"https://attacker.example/\">click</a>"
+
+	tests := []struct {
+		name   string
+		params Params
+		expErr string
+	}{
+		{
+			name:   "CRLF in recipient",
+			params: Params{From: "from@example.com", To: []string{injected}, Subject: "subj"},
+			expErr: "invalid To header value",
+		},
+		{
+			name:   "CRLF in one of the recipients",
+			params: Params{From: "from@example.com", To: []string{"to@example.com", injected}, Subject: "subj"},
+			expErr: "invalid To header value",
+		},
+		{
+			name:   "CRLF in sender",
+			params: Params{From: "from@example.com\r\nBcc: attacker@example.net", To: []string{"to@example.com"}},
+			expErr: "invalid From header value",
+		},
+		{
+			name:   "CRLF in subject",
+			params: Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj\r\nBcc: attacker@example.net"},
+			expErr: "invalid Subject header value",
+		},
+		{
+			name: "CRLF in unsubscribe link",
+			params: Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj",
+				UnsubscribeLink: "https://example.com/unsubscribe>\r\nBcc: attacker@example.net"},
+			expErr: "invalid List-Unsubscribe header value",
+		},
+		{
+			name: "LF in in-reply-to",
+			params: Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj",
+				InReplyTo: "uuid@example.com>\nBcc: attacker@example.net"},
+			expErr: "invalid In-reply-to header value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+			smtpClient := &mocks.SMTPClientMock{
+				AuthFunc:  func(_ smtp.Auth) error { return nil },
+				CloseFunc: func() error { return nil },
+				MailFunc:  func(string) error { return nil },
+				QuitFunc:  func() error { return nil },
+				RcptFunc:  func(_ string) error { return nil },
+				DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+			}
+
+			s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+			err := s.Send("some text\n", tt.params)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expErr)
+
+			assert.Empty(t, smtpClient.MailCalls(), "rejected before talking to the server")
+			assert.Empty(t, smtpClient.RcptCalls())
+			assert.Empty(t, smtpClient.DataCalls())
+			assert.Empty(t, wc.buff.String(), "nothing sent")
+			assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
+		})
+	}
+}
+
+func TestEmail_SendNoDataOnBadMessage(t *testing.T) {
+	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+	smtpClient := &mocks.SMTPClientMock{
+		AuthFunc:  func(_ smtp.Auth) error { return nil },
+		CloseFunc: func() error { return nil },
+		MailFunc:  func(string) error { return nil },
+		QuitFunc:  func() error { return nil },
+		RcptFunc:  func(_ string) error { return nil },
+		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+	}
+
+	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+	err := s.Send("some text\n", Params{
+		From:        "from@example.com",
+		To:          []string{"to@example.com"},
+		Subject:     "subj",
+		Attachments: []string{"does/not/exist/1.txt"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "can't make email message")
+	assert.Empty(t, smtpClient.DataCalls(), "message is built before the data command")
+	assert.Empty(t, smtpClient.MailCalls())
+	assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
 }
 
 func TestEmail_buildMessage(t *testing.T) {
@@ -889,8 +1045,10 @@ func TestSender_String(t *testing.T) {
 // }
 
 type fakeWriterCloser struct {
-	buff *bytes.Buffer
-	fail bool
+	buff     *bytes.Buffer
+	fail     bool
+	closeErr error
+	closed   bool
 }
 
 func (wc *fakeWriterCloser) Write(p []byte) (n int, err error) {
@@ -901,7 +1059,8 @@ func (wc *fakeWriterCloser) Write(p []byte) (n int, err error) {
 }
 
 func (wc *fakeWriterCloser) Close() error {
-	return nil
+	wc.closed = true
+	return wc.closeErr
 }
 
 func startSMTPTestServer(t *testing.T, handler func(net.Conn) error) (host string, port int, done <-chan error) {
