@@ -663,6 +663,7 @@ func TestEmail_SendFailed(t *testing.T) {
 			Subject: "subj",
 		})
 		require.EqualError(t, err, "no recipients")
+		assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
 	}
 }
 
@@ -752,6 +753,7 @@ func TestEmail_SendHeaderInjection(t *testing.T) {
 			assert.Empty(t, smtpClient.RcptCalls())
 			assert.Empty(t, smtpClient.DataCalls())
 			assert.Empty(t, wc.buff.String(), "nothing sent")
+			assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
 		})
 	}
 }
@@ -778,6 +780,7 @@ func TestEmail_SendNoDataOnBadMessage(t *testing.T) {
 	assert.Contains(t, err.Error(), "can't make email message")
 	assert.Empty(t, smtpClient.DataCalls(), "message is built before the data command")
 	assert.Empty(t, smtpClient.MailCalls())
+	assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
 }
 
 func TestEmail_buildMessage(t *testing.T) {

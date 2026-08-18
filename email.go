@@ -104,24 +104,7 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 func (em *Sender) Send(text string, params Params) error {
 	em.logger.Logf("[DEBUG] send %q to %v", text, params.To)
 
-	if len(params.To) == 0 {
-		return errors.New("no recipients")
-	}
-
-	// message is built before the connection is made, this way a bad message doesn't reach the server at all
-	msg, err := em.buildMessage(text, params)
-	if err != nil {
-		return fmt.Errorf("can't make email message: %w", err)
-	}
-
-	client := em.smtpClient
-	if client == nil { // if client not set make new net/smtp
-		c, e := em.client()
-		if e != nil {
-			return fmt.Errorf("failed to make smtp client: %w", e)
-		}
-		client = c
-	}
+	client := em.smtpClient // set by the SMTP option, nil when Send makes its own client below
 
 	var quit bool
 	defer func() {
@@ -132,6 +115,24 @@ func (em *Sender) Send(text string, params Params) error {
 			em.logger.Logf("[WARN] can't close smtp connection, %v", e)
 		}
 	}()
+
+	if len(params.To) == 0 {
+		return errors.New("no recipients")
+	}
+
+	// message is built before the connection is made, this way a bad message doesn't reach the server at all
+	msg, err := em.buildMessage(text, params)
+	if err != nil {
+		return fmt.Errorf("can't make email message: %w", err)
+	}
+
+	if client == nil {
+		c, e := em.client()
+		if e != nil {
+			return fmt.Errorf("failed to make smtp client: %w", e)
+		}
+		client = c
+	}
 
 	if auth := em.auth(); auth != nil {
 		if err = client.Auth(auth); err != nil {
