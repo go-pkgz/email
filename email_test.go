@@ -1,13 +1,22 @@
 package email
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/mail"
 	"net/smtp"
 	"os"
@@ -32,7 +41,7 @@ func TestEmail_New(t *testing.T) {
 		Log(logger), Charset("blah"),
 	)
 	require.NotNil(t, s)
-	assert.Equal(t, "[INFO] new email sender created with host: localhost:123, tls: true, insecureSkipVerify: true, username: \"user\", timeout: 1s, content type: \"text/html\", charset: \"blah\"",
+	assert.Equal(t, "[INFO] new email sender created with host: localhost:123, helo: \"localhost\", tls: true, insecureSkipVerify: true, username: \"user\", timeout: 1s, content type: \"text/html\", charset: \"blah\"",
 		logBuff.String())
 
 	assert.Equal(t, "localhost", s.host)
@@ -43,8 +52,310 @@ func TestEmail_New(t *testing.T) {
 	assert.Equal(t, time.Second, s.timeOut)
 	assert.Equal(t, "text/html", s.contentType)
 	assert.Equal(t, "blah", s.contentCharset)
+	assert.Empty(t, s.heloHost)
 	assert.True(t, s.tls)
 	assert.True(t, s.starttls)
+}
+
+func TestEmail_NewHELOHost(t *testing.T) {
+	tests := []struct {
+		name          string
+		options       []Option
+		wantStored    string
+		wantEffective string
+	}{
+		{name: "unset greets as localhost", wantEffective: "localhost"},
+		{name: "explicit empty greets as localhost", options: []Option{HELOHost("")}, wantEffective: "localhost"},
+		{name: "explicit hostname", options: []Option{HELOHost("client.example.net")}, wantStored: "client.example.net", wantEffective: "client.example.net"},
+		{name: "explicit localhost", options: []Option{HELOHost("localhost")}, wantStored: "localhost", wantEffective: "localhost"},
+		{name: "address literal", options: []Option{HELOHost("[192.0.2.10]")}, wantStored: "[192.0.2.10]", wantEffective: "[192.0.2.10]"},
+		{name: "injected client owns greeting", options: []Option{SMTP(&mocks.SMTPClientMock{}), HELOHost("ignored.example.net")}, wantStored: "ignored.example.net", wantEffective: "client-managed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewSender("localhost", tt.options...)
+			assert.Equal(t, tt.wantStored, s.heloHost)
+			assert.Equal(t, tt.wantEffective, s.effectiveHELOHost())
+		})
+	}
+}
+
+func TestEmail_ClientHELOHost(t *testing.T) {
+	tests := []struct {
+		name    string
+		sender  func(host string, port int) *Sender
+		wantCmd string
+	}{
+		{
+			name: "explicit address literal",
+			sender: func(host string, port int) *Sender {
+				return NewSender(host, Port(port), HELOHost("[192.0.2.10]"))
+			},
+			wantCmd: "EHLO [192.0.2.10]",
+		},
+		{
+			name: "explicit hostname",
+			sender: func(host string, port int) *Sender {
+				return NewSender(host, Port(port), HELOHost("client.example.net"))
+			},
+			wantCmd: "EHLO client.example.net",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
+				if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
+					return err
+				}
+				reader := bufio.NewReader(conn)
+				cmd, err := readSMTPCommand(reader)
+				if err != nil {
+					return err
+				}
+				if cmd != tt.wantCmd {
+					return fmt.Errorf("unexpected greeting %q, want %q", cmd, tt.wantCmd)
+				}
+				if writeErr := writeSMTPResponse(conn, "250 smtp.example.net"); writeErr != nil {
+					return writeErr
+				}
+				return expectSMTPQuit(conn, reader)
+			})
+
+			client, err := tt.sender(host, port).client()
+			require.NoError(t, err)
+			require.NoError(t, client.Quit())
+			waitSMTPTestServer(t, done)
+		})
+	}
+}
+
+// pins backward compatibility: a caller setting no HELOHost must greet exactly as before the option existed
+func TestEmail_ClientWithoutHELOHostGreetsLocalhost(t *testing.T) {
+	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
+		if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
+			return err
+		}
+		reader := bufio.NewReader(conn)
+		cmd, err := readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "EHLO localhost" {
+			return fmt.Errorf("unexpected greeting %q", cmd)
+		}
+		if writeErr := writeSMTPResponse(conn, "250 smtp.example.net"); writeErr != nil {
+			return writeErr
+		}
+		cmd, err = readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "MAIL FROM:<sender@example.com>" {
+			return fmt.Errorf("unexpected mail command %q", cmd)
+		}
+		if err := writeSMTPResponse(conn, "250 sender accepted"); err != nil {
+			return err
+		}
+		return expectSMTPQuit(conn, reader)
+	})
+
+	client, err := NewSender(host, Port(port)).client()
+	require.NoError(t, err)
+	require.NoError(t, client.Mail("sender@example.com"))
+	require.NoError(t, client.Quit())
+	waitSMTPTestServer(t, done)
+}
+
+func TestEmail_ClientHELOFallback(t *testing.T) {
+	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
+		if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
+			return err
+		}
+		reader := bufio.NewReader(conn)
+		cmd, err := readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "EHLO client.example.net" {
+			return fmt.Errorf("unexpected EHLO command %q", cmd)
+		}
+		if writeErr := writeSMTPResponse(conn, "500 EHLO unavailable"); writeErr != nil {
+			return writeErr
+		}
+		cmd, err = readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "HELO client.example.net" {
+			return fmt.Errorf("unexpected HELO command %q", cmd)
+		}
+		if err := writeSMTPResponse(conn, "250 smtp.example.net"); err != nil {
+			return err
+		}
+		return expectSMTPQuit(conn, reader)
+	})
+
+	sender := NewSender(host, Port(port), HELOHost("client.example.net"))
+	client, err := sender.client()
+	require.NoError(t, err)
+	require.NoError(t, client.Quit())
+	waitSMTPTestServer(t, done)
+}
+
+func TestEmail_ClientHELOFailureClosesConnection(t *testing.T) {
+	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
+		if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
+			return err
+		}
+		reader := bufio.NewReader(conn)
+		if _, err := readSMTPCommand(reader); err != nil {
+			return err
+		}
+		if err := writeSMTPResponse(conn, "500 EHLO unavailable"); err != nil {
+			return err
+		}
+		if _, err := readSMTPCommand(reader); err != nil {
+			return err
+		}
+		if err := writeSMTPResponse(conn, "550 HELO rejected"); err != nil {
+			return err
+		}
+		return expectSMTPConnectionClosed(conn, reader)
+	})
+
+	sender := NewSender(host, Port(port), HELOHost("client.example.net"))
+	client, err := sender.client()
+	require.Error(t, err)
+	assert.Nil(t, client)
+	assert.Contains(t, err.Error(), "failed to send SMTP greeting")
+	assert.Contains(t, err.Error(), "550")
+	assert.Contains(t, err.Error(), "HELO rejected")
+	waitSMTPTestServer(t, done)
+}
+
+func TestEmail_ClientSTARTTLSFailureClosesConnection(t *testing.T) {
+	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
+		if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
+			return err
+		}
+		reader := bufio.NewReader(conn)
+		cmd, err := readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "EHLO client.example.net" {
+			return fmt.Errorf("unexpected greeting %q", cmd)
+		}
+		if _, err = io.WriteString(conn, "250-smtp.example.net\r\n250 STARTTLS\r\n"); err != nil {
+			return err
+		}
+		cmd, err = readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "STARTTLS" {
+			return fmt.Errorf("unexpected command %q", cmd)
+		}
+		if err := writeSMTPResponse(conn, "454 TLS unavailable"); err != nil {
+			return err
+		}
+		return expectSMTPConnectionClosed(conn, reader)
+	})
+
+	sender := NewSender(host, Port(port), STARTTLS(true), HELOHost("client.example.net"))
+	client, err := sender.client()
+	require.Error(t, err)
+	assert.Nil(t, client)
+	assert.Contains(t, err.Error(), "failed to start tls")
+	assert.Contains(t, err.Error(), "454")
+	assert.Contains(t, err.Error(), "TLS unavailable")
+	waitSMTPTestServer(t, done)
+}
+
+func TestEmail_ClientSTARTTLSReusesHELOHost(t *testing.T) {
+	serverTLS := smtpTestTLSConfig(t)
+	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
+		if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
+			return err
+		}
+		reader := bufio.NewReader(conn)
+		cmd, err := readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "EHLO client.example.net" {
+			return fmt.Errorf("unexpected greeting before STARTTLS %q", cmd)
+		}
+		if _, err = io.WriteString(conn, "250-smtp.example.net\r\n250 STARTTLS\r\n"); err != nil {
+			return err
+		}
+		cmd, err = readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "STARTTLS" {
+			return fmt.Errorf("unexpected command %q", cmd)
+		}
+		if writeErr := writeSMTPResponse(conn, "220 ready for TLS"); writeErr != nil {
+			return writeErr
+		}
+
+		tlsConn := tls.Server(conn, serverTLS)
+		if handshakeErr := tlsConn.Handshake(); handshakeErr != nil {
+			return handshakeErr
+		}
+		reader = bufio.NewReader(tlsConn)
+		cmd, err = readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "EHLO client.example.net" {
+			return fmt.Errorf("unexpected greeting after STARTTLS %q", cmd)
+		}
+		if err := writeSMTPResponse(tlsConn, "250 smtp.example.net"); err != nil {
+			return err
+		}
+		return expectSMTPQuit(tlsConn, reader)
+	})
+
+	sender := NewSender(host, Port(port), STARTTLS(true), InsecureSkipVerify(true), HELOHost("client.example.net"))
+	client, err := sender.client()
+	require.NoError(t, err)
+	require.NoError(t, client.Quit())
+	waitSMTPTestServer(t, done)
+}
+
+func TestEmail_ClientTLSHELOHost(t *testing.T) {
+	serverTLS := smtpTestTLSConfig(t)
+	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
+		tlsConn := tls.Server(conn, serverTLS)
+		if err := tlsConn.Handshake(); err != nil {
+			return err
+		}
+		if err := writeSMTPResponse(tlsConn, "220 smtp.example.net ESMTP ready"); err != nil {
+			return err
+		}
+		reader := bufio.NewReader(tlsConn)
+		cmd, err := readSMTPCommand(reader)
+		if err != nil {
+			return err
+		}
+		if cmd != "EHLO client.example.net" {
+			return fmt.Errorf("unexpected greeting %q", cmd)
+		}
+		if err := writeSMTPResponse(tlsConn, "250 smtp.example.net"); err != nil {
+			return err
+		}
+		return expectSMTPQuit(tlsConn, reader)
+	})
+
+	sender := NewSender(host, Port(port), TLS(true), InsecureSkipVerify(true), HELOHost("client.example.net"))
+	client, err := sender.client()
+	require.NoError(t, err)
+	require.NoError(t, client.Quit())
+	waitSMTPTestServer(t, done)
 }
 
 func TestEmail_Send(t *testing.T) {
@@ -59,7 +370,7 @@ func TestEmail_Send(t *testing.T) {
 	}
 
 	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient),
-		Auth("user", "pass"), TimeOut(time.Second))
+		Auth("user", "pass"), TimeOut(time.Second), HELOHost("ignored.example.net"))
 
 	s.timeNow = func() time.Time { return time.Date(2022, time.February, 10, 23, 33, 58, 0, time.UTC) }
 
@@ -554,13 +865,16 @@ func TestWriteBodyFail(t *testing.T) {
 
 func TestSender_String(t *testing.T) {
 	e := NewSender("localhost", ContentType("text/html"), Port(2525), Auth("user", "pass"))
-	assert.Equal(t, `smtp://localhost:2525, auth:true, tls:false, starttls:false, insecureSkipVerify:false, timeout:30s, content-type:"text/html", charset:"UTF-8"`,
+	assert.Equal(t, `smtp://localhost:2525, helo:"localhost", auth:true, tls:false, starttls:false, insecureSkipVerify:false, timeout:30s, content-type:"text/html", charset:"UTF-8"`,
 		e.String())
 
-	e = NewSender("localhost", ContentType("text/html"), Port(2525), TLS(true),
-		STARTTLS(true), InsecureSkipVerify(true), TimeOut(10*time.Second))
-	assert.Equal(t, `smtp://localhost:2525, auth:false, tls:true, starttls:true, insecureSkipVerify:true, timeout:10s, content-type:"text/html", charset:"UTF-8"`,
+	e = NewSender("localhost", ContentType("text/html"), Port(2525), TLS(true), STARTTLS(true), InsecureSkipVerify(true),
+		TimeOut(10*time.Second), HELOHost("client.example.net"))
+	assert.Equal(t, `smtp://localhost:2525, helo:"client.example.net", auth:false, tls:true, starttls:true, insecureSkipVerify:true, timeout:10s, content-type:"text/html", charset:"UTF-8"`,
 		e.String())
+
+	e = NewSender("localhost", SMTP(&mocks.SMTPClientMock{}))
+	assert.Equal(t, `smtp://localhost:25, helo:"client-managed", auth:false, tls:false, starttls:false, insecureSkipVerify:false, timeout:30s, content-type:"text/plain", charset:"UTF-8"`, e.String())
 }
 
 // uncomment to debug with real smtp server
@@ -588,6 +902,98 @@ func (wc *fakeWriterCloser) Write(p []byte) (n int, err error) {
 
 func (wc *fakeWriterCloser) Close() error {
 	return nil
+}
+
+func startSMTPTestServer(t *testing.T, handler func(net.Conn) error) (host string, port int, done <-chan error) {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	result := make(chan error, 1)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			result <- acceptErr
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		result <- handler(conn)
+	}()
+
+	address := listener.Addr().(*net.TCPAddr)
+	return address.IP.String(), address.Port, result
+}
+
+func waitSMTPTestServer(t *testing.T, done <-chan error) {
+	t.Helper()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("timed out waiting for SMTP test server")
+	}
+}
+
+func readSMTPCommand(reader *bufio.Reader) (string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), nil
+}
+
+func writeSMTPResponse(conn net.Conn, response string) error {
+	_, err := io.WriteString(conn, response+"\r\n")
+	return err
+}
+
+func expectSMTPQuit(conn net.Conn, reader *bufio.Reader) error {
+	cmd, err := readSMTPCommand(reader)
+	if err != nil {
+		return err
+	}
+	if cmd != "QUIT" {
+		return fmt.Errorf("unexpected command %q, want QUIT", cmd)
+	}
+	return writeSMTPResponse(conn, "221 bye")
+}
+
+func expectSMTPConnectionClosed(conn net.Conn, reader *bufio.Reader) error {
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	_, err := reader.ReadByte()
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err == nil {
+		return errors.New("SMTP connection remained open")
+	}
+	return fmt.Errorf("waiting for SMTP connection close: %w", err)
+}
+
+func smtpTestTLSConfig(t *testing.T) *tls.Config {
+	t.Helper()
+
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "smtp.example.net"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	certificate, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	require.NoError(t, err)
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{certificate}, PrivateKey: privateKey}},
+		MinVersion:   tls.VersionTLS12,
+	}
 }
 
 func TestExtractEmailAddress(t *testing.T) {
