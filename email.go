@@ -457,16 +457,30 @@ func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string
 		return fmt.Errorf("failed to read file type %q: %w", attachment, err)
 	}
 	fTypeBuff = fTypeBuff[:n] // file can be shorter than the buffer
+
 	fName := filepath.Base(attachment)
+	// CR and LF are legal in file names but would terminate the header the name goes into
+	if strings.ContainsAny(fName, "\r\n") {
+		return fmt.Errorf("invalid file name %q: contains CR or LF", attachment)
+	}
+
+	// the detected type is always parseable, it comes from a fixed set of sniffed types
+	contentType, ctParams, _ := mime.ParseMediaType(http.DetectContentType(fTypeBuff))
+	params := map[string]string{"name": fName}
+	for k, v := range ctParams { // carries the charset of the text types over
+		params[k] = v
+	}
+
+	// mime formatting quotes and encodes the file name, plain interpolation would let it break out of the header
 	header := textproto.MIMEHeader{}
-	header.Set("Content-Type", http.DetectContentType(fTypeBuff)+"; name=\""+fName+"\"")
+	header.Set("Content-Type", mime.FormatMediaType(contentType, params))
 	header.Set("Content-Transfer-Encoding", "base64")
 
 	switch disposition {
-	case "attachment":
-		header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fName))
-	case "inline":
-		header.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", fName))
+	case "attachment", "inline":
+		header.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": fName}))
+	}
+	if disposition == "inline" {
 		header.Set("Content-ID", fmt.Sprintf("<%s>", fName))
 	}
 
