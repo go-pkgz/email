@@ -158,8 +158,9 @@ func (em *Sender) Send(text string, params Params) error {
 	if _, err = buf.WriteTo(writer); err != nil {
 		return fmt.Errorf("failed to send email body to %q: %w", params.To, err)
 	}
+	// closing the writer reports the final response to the DATA command, i.e. the actual delivery result
 	if err = writer.Close(); err != nil {
-		em.logger.Logf("[WARN] can't close smtp body writer, %v", err)
+		return fmt.Errorf("failed to send email to %q: %w", params.To, err)
 	}
 
 	if err = client.Quit(); err != nil {
@@ -387,53 +388,7 @@ func (em *Sender) writeBody(wc io.WriteCloser, text string) error {
 
 func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition string) error {
 	for _, attachment := range files {
-		file, err := os.Open(filepath.Clean(attachment))
-		if err != nil {
-			return err
-		}
-
-		// we need first 512 bytes to detect file type
-		fTypeBuff := make([]byte, 512)
-		_, err = file.Read(fTypeBuff)
-		if err != nil {
-			return fmt.Errorf("failed to read file type %q: %w", attachment, err)
-		}
-
-		// remove null bytes in case file less than 512 bytes
-		fTypeBuff = bytes.Trim(fTypeBuff, "\x00")
-		fName := filepath.Base(attachment)
-		header := textproto.MIMEHeader{}
-		header.Set("Content-Type", http.DetectContentType(fTypeBuff)+"; name=\""+fName+"\"")
-		header.Set("Content-Transfer-Encoding", "base64")
-
-		switch disposition {
-		case "attachment":
-			header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fName))
-		case "inline":
-			header.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", fName))
-			header.Set("Content-ID", fmt.Sprintf("<%s>", fName))
-		}
-
-		writer, err := mp.CreatePart(header)
-		if err != nil {
-			return err
-		}
-
-		// set reader offset at the beginning of the file because we read first 512 bytes
-		_, err = file.Seek(0, io.SeekStart)
-		if err != nil {
-			return err
-		}
-
-		encoder := base64.NewEncoder(base64.StdEncoding, writer)
-		if _, err := io.Copy(encoder, file); err != nil {
-			return err
-		}
-		if err := encoder.Close(); err != nil {
-			return err
-		}
-
-		if err := file.Close(); err != nil {
+		if err := em.writeFile(mp, attachment, disposition); err != nil {
 			return err
 		}
 	}
@@ -441,6 +396,56 @@ func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition s
 		return err
 	}
 	return nil
+}
+
+// writeFile adds a single file as a mime part, the file is closed on every return path
+func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string) (err error) {
+	file, err := os.Open(filepath.Clean(attachment))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if e := file.Close(); e != nil && err == nil {
+			err = e
+		}
+	}()
+
+	// we need first 512 bytes to detect file type
+	fTypeBuff := make([]byte, 512)
+	if _, err = file.Read(fTypeBuff); err != nil {
+		return fmt.Errorf("failed to read file type %q: %w", attachment, err)
+	}
+
+	// remove null bytes in case file less than 512 bytes
+	fTypeBuff = bytes.Trim(fTypeBuff, "\x00")
+	fName := filepath.Base(attachment)
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Type", http.DetectContentType(fTypeBuff)+"; name=\""+fName+"\"")
+	header.Set("Content-Transfer-Encoding", "base64")
+
+	switch disposition {
+	case "attachment":
+		header.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", fName))
+	case "inline":
+		header.Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", fName))
+		header.Set("Content-ID", fmt.Sprintf("<%s>", fName))
+	}
+
+	writer, err := mp.CreatePart(header)
+	if err != nil {
+		return err
+	}
+
+	// set reader offset at the beginning of the file because we read first 512 bytes
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+
+	encoder := base64.NewEncoder(base64.StdEncoding, writer)
+	if _, err = io.Copy(encoder, file); err != nil {
+		return err
+	}
+	return encoder.Close()
 }
 
 type nopLogger struct{}

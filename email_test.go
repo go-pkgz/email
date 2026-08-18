@@ -274,6 +274,45 @@ func TestEmail_ClientSTARTTLSFailureClosesConnection(t *testing.T) {
 	waitSMTPTestServer(t, done)
 }
 
+func TestEmail_SendRejectedAfterData(t *testing.T) {
+	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
+		if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
+			return err
+		}
+		reader := bufio.NewReader(conn)
+		for _, response := range []string{"250 smtp.example.net", "250 sender accepted", "250 recipient accepted", "354 send the message"} {
+			if _, err := readSMTPCommand(reader); err != nil {
+				return err
+			}
+			if err := writeSMTPResponse(conn, response); err != nil {
+				return err
+			}
+		}
+
+		for { // read the message until the terminating dot
+			line, err := readSMTPCommand(reader)
+			if err != nil {
+				return err
+			}
+			if line == "." {
+				break
+			}
+		}
+		return writeSMTPResponse(conn, "552 message rejected")
+	})
+
+	sender := NewSender(host, Port(port), ContentType("text/html"), TimeOut(3*time.Second))
+	err := sender.Send("some text\n", Params{
+		From:    "from@example.com",
+		To:      []string{"to@example.com"},
+		Subject: "subj",
+	})
+	require.Error(t, err, "rejection of the message by the server has to reach the caller")
+	assert.Contains(t, err.Error(), "552")
+	assert.Contains(t, err.Error(), "message rejected")
+	waitSMTPTestServer(t, done)
+}
+
 func TestEmail_ClientSTARTTLSReusesHELOHost(t *testing.T) {
 	serverTLS := smtpTestTLSConfig(t)
 	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
@@ -625,6 +664,29 @@ func TestEmail_SendFailed(t *testing.T) {
 		})
 		require.EqualError(t, err, "no recipients")
 	}
+}
+
+func TestEmail_SendRejectedBody(t *testing.T) {
+	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil), closeErr: errors.New("552 5.3.4 message too big")}
+	smtpClient := &mocks.SMTPClientMock{
+		AuthFunc:  func(_ smtp.Auth) error { return nil },
+		CloseFunc: func() error { return nil },
+		MailFunc:  func(string) error { return nil },
+		QuitFunc:  func() error { return nil },
+		RcptFunc:  func(_ string) error { return nil },
+		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+	}
+
+	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+	err := s.Send("some text\n", Params{
+		From:    "from@example.com",
+		To:      []string{"to@example.com"},
+		Subject: "subj",
+	})
+	require.EqualError(t, err, "failed to send email to [\"to@example.com\"]: 552 5.3.4 message too big")
+	assert.True(t, wc.closed)
+	assert.Empty(t, smtpClient.QuitCalls(), "no quit for a message the server didn't accept")
+	assert.Len(t, smtpClient.CloseCalls(), 1, "connection closed by the deferred cleanup")
 }
 
 func TestEmail_SendHeaderInjection(t *testing.T) {
@@ -980,8 +1042,10 @@ func TestSender_String(t *testing.T) {
 // }
 
 type fakeWriterCloser struct {
-	buff *bytes.Buffer
-	fail bool
+	buff     *bytes.Buffer
+	fail     bool
+	closeErr error
+	closed   bool
 }
 
 func (wc *fakeWriterCloser) Write(p []byte) (n int, err error) {
@@ -992,7 +1056,8 @@ func (wc *fakeWriterCloser) Write(p []byte) (n int, err error) {
 }
 
 func (wc *fakeWriterCloser) Close() error {
-	return nil
+	wc.closed = true
+	return wc.closeErr
 }
 
 func startSMTPTestServer(t *testing.T, handler func(net.Conn) error) (host string, port int, done <-chan error) {
