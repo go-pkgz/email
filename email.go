@@ -3,6 +3,7 @@ package email
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -98,13 +100,21 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 	return &res
 }
 
-// Send email with given text
-// If SMTPClient set with the SMTP option it will be used, if not - new smtp.Client on each send.
-// Always closes client on completion or failure.
+// Send email with given text, with no cancellation and with TimeOut applied to the connection setup only.
+// See SendContext for the details.
 func (em *Sender) Send(text string, params Params) error {
+	return em.SendContext(context.Background(), text, params)
+}
+
+// SendContext sends email with given text and terminates the whole SMTP transaction as soon as ctx is done,
+// including the greeting, the authentication and the message body transfer.
+// If SMTPClient set with the SMTP option it will be used, if not - new smtp.Client on each send.
+// Note that a client set that way owns its connection, so such a transaction can't be terminated in the middle.
+// Always closes client on completion or failure.
+func (em *Sender) SendContext(ctx context.Context, text string, params Params) error {
 	em.logger.Logf("[DEBUG] send %q to %v", text, params.To)
 
-	client := em.smtpClient // set by the SMTP option, nil when Send makes its own client below
+	client := em.smtpClient // set by the SMTP option, nil when SendContext makes its own client below
 
 	var quit bool
 	defer func() {
@@ -116,6 +126,10 @@ func (em *Sender) Send(text string, params Params) error {
 		}
 	}()
 
+	if err := ctx.Err(); err != nil { // nothing started yet, a client set with the SMTP option is closed by the defer
+		return err
+	}
+
 	if len(params.To) == 0 {
 		return errors.New("no recipients")
 	}
@@ -126,11 +140,12 @@ func (em *Sender) Send(text string, params Params) error {
 		return fmt.Errorf("can't make email message: %w", err)
 	}
 
-	if client == nil {
-		c, e := em.client()
+	if client == nil { // if client not set make new net/smtp
+		c, stop, e := em.client(ctx)
 		if e != nil {
 			return fmt.Errorf("failed to make smtp client: %w", e)
 		}
+		defer stop() // runs before the deferred close above, releasing the ctx watcher first
 		client = c
 	}
 
@@ -198,7 +213,10 @@ func (em *Sender) effectiveHELOHost() string {
 	return em.heloHost
 }
 
-func (em *Sender) client() (c *smtp.Client, err error) {
+// client makes smtp client with the connection bound to ctx: it is closed as soon as ctx is done,
+// which is the only way to interrupt net/smtp calls as they take no context.
+// Returned stop function releases that binding and has to be called when the client is not needed anymore.
+func (em *Sender) client(ctx context.Context) (c *smtp.Client, stop func(), err error) {
 	srvAddress := net.JoinHostPort(em.host, strconv.Itoa(em.port))
 	// #nosec G402
 	tlsConf := &tls.Config{
@@ -207,43 +225,64 @@ func (em *Sender) client() (c *smtp.Client, err error) {
 		MinVersion:         tls.VersionTLS12,
 	}
 
+	dialer := &net.Dialer{Timeout: em.timeOut}
+
+	var conn net.Conn
 	if em.tls {
-		conn, e := tls.DialWithDialer(&net.Dialer{Timeout: em.timeOut}, "tcp", srvAddress, tlsConf)
-		if e != nil {
-			return nil, fmt.Errorf("failed to dial smtp tls to %s: %w", srvAddress, e)
+		if conn, err = (&tls.Dialer{NetDialer: dialer, Config: tlsConf}).DialContext(ctx, "tcp", srvAddress); err != nil {
+			return nil, nil, fmt.Errorf("failed to dial smtp tls to %s: %w", srvAddress, err)
 		}
-		if c, err = smtp.NewClient(conn, em.host); err != nil {
-			return nil, fmt.Errorf("failed to make smtp client for %s: %w", srvAddress, err)
+	} else {
+		if conn, err = dialer.DialContext(ctx, "tcp", srvAddress); err != nil {
+			return nil, nil, fmt.Errorf("timeout connecting to %s: %w", srvAddress, err)
 		}
-		if err = em.hello(c); err != nil {
-			_ = c.Close()
-			return nil, err
-		}
-		return c, nil
 	}
 
-	conn, err := net.DialTimeout("tcp", srvAddress, em.timeOut)
-	if err != nil {
-		return nil, fmt.Errorf("timeout connecting to %s: %w", srvAddress, err)
+	// closing the connection is the only way to interrupt net/smtp calls, as they take no context
+	watchDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-watchDone:
+		}
+	}()
+	var stopOnce sync.Once
+	stop = func() { stopOnce.Do(func() { close(watchDone) }) }
+
+	if deadline, ok := ctx.Deadline(); ok {
+		if e := conn.SetDeadline(deadline); e != nil {
+			em.logger.Logf("[WARN] can't set deadline on smtp connection to %s, %v", srvAddress, e)
+		}
 	}
 
-	c, err = smtp.NewClient(conn, em.host)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial: %w", err)
+	if c, err = smtp.NewClient(conn, em.host); err != nil {
+		stop()
+		_ = conn.Close()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, fmt.Errorf("failed to make smtp client for %s: %w", srvAddress, ctxErr)
+		}
+		if em.tls {
+			return nil, nil, fmt.Errorf("failed to make smtp client for %s: %w", srvAddress, err)
+		}
+		return nil, nil, fmt.Errorf("failed to dial: %w", err)
 	}
+
 	if err = em.hello(c); err != nil {
+		stop()
 		_ = c.Close()
-		return nil, err
+		return nil, nil, err
 	}
 
-	if em.starttls {
+	if !em.tls && em.starttls {
 		if err = c.StartTLS(tlsConf); err != nil {
+			stop()
 			_ = c.Close()
-			return nil, fmt.Errorf("failed to start tls: %w", err)
+			return nil, nil, fmt.Errorf("failed to start tls: %w", err)
 		}
 	}
 
-	return c, nil
+	return c, stop, nil
 }
 
 func (em *Sender) hello(client *smtp.Client) error {
