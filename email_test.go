@@ -1061,6 +1061,27 @@ func TestLineWrapper(t *testing.T) {
 	}
 }
 
+func BenchmarkBuildMessageWithAttachment(b *testing.B) {
+	file := filepath.Join(b.TempDir(), "attachment.bin")
+	require.NoError(b, os.WriteFile(file, bytes.Repeat([]byte{'x'}, 4*1024*1024), 0o600))
+
+	e := NewSender("localhost", ContentType("text/html"))
+	params := Params{
+		From:        "from@example.com",
+		To:          []string{"to@example.com"},
+		Subject:     "subj",
+		Attachments: []string{file},
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg, err := e.buildMessage("this is a test\n", params)
+		require.NoError(b, err)
+		require.NotZero(b, msg.Len())
+	}
+}
+
 func TestWriteAttachmentsFailed(t *testing.T) {
 
 	e := NewSender("localhost", ContentType("text/html"))
