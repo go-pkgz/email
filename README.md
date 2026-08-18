@@ -58,6 +58,19 @@ To send email user need to create a sender first and then use `Send` method. The
 
 See [go docs](https://pkg.go.dev/github.com/go-pkgz/email#Sender.Send) for `Send` function.
 
+`SendContext` takes the same parameters with a context added and is the way to bound the time spent on sending.
+The `TimeOut` option covers the connection setup only, while the context covers the whole SMTP transaction,
+so a server accepting the connection and stalling afterwards terminates the send instead of blocking the caller:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+defer cancel()
+err := client.SendContext(ctx, "some content", email.Params{From: "me@example.com", To: []string{"to@example.com"}})
+```
+
+A custom smtp client set with the `SMTP` option owns its connection, and such a transaction can't be
+terminated in the middle; the context is checked before it starts in that case.
+
 ## technical details
 
 - Content-Transfer-Encoding set to `quoted-printable`

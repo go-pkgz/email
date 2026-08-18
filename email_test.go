@@ -3,6 +3,7 @@ package email
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -125,7 +126,7 @@ func TestEmail_ClientHELOHost(t *testing.T) {
 				return expectSMTPQuit(conn, reader)
 			})
 
-			client, err := tt.sender(host, port).client()
+			client, _, err := tt.sender(host, port).client(context.Background())
 			require.NoError(t, err)
 			require.NoError(t, client.Quit())
 			waitSMTPTestServer(t, done)
@@ -163,7 +164,7 @@ func TestEmail_ClientWithoutHELOHostGreetsLocalhost(t *testing.T) {
 		return expectSMTPQuit(conn, reader)
 	})
 
-	client, err := NewSender(host, Port(port)).client()
+	client, _, err := NewSender(host, Port(port)).client(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, client.Mail("sender@example.com"))
 	require.NoError(t, client.Quit())
@@ -200,7 +201,7 @@ func TestEmail_ClientHELOFallback(t *testing.T) {
 	})
 
 	sender := NewSender(host, Port(port), HELOHost("client.example.net"))
-	client, err := sender.client()
+	client, _, err := sender.client(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, client.Quit())
 	waitSMTPTestServer(t, done)
@@ -228,7 +229,7 @@ func TestEmail_ClientHELOFailureClosesConnection(t *testing.T) {
 	})
 
 	sender := NewSender(host, Port(port), HELOHost("client.example.net"))
-	client, err := sender.client()
+	client, _, err := sender.client(context.Background())
 	require.Error(t, err)
 	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "failed to send SMTP greeting")
@@ -267,7 +268,7 @@ func TestEmail_ClientSTARTTLSFailureClosesConnection(t *testing.T) {
 	})
 
 	sender := NewSender(host, Port(port), STARTTLS(true), HELOHost("client.example.net"))
-	client, err := sender.client()
+	client, _, err := sender.client(context.Background())
 	require.Error(t, err)
 	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "failed to start tls")
@@ -362,7 +363,7 @@ func TestEmail_ClientSTARTTLSReusesHELOHost(t *testing.T) {
 	})
 
 	sender := NewSender(host, Port(port), STARTTLS(true), InsecureSkipVerify(true), HELOHost("client.example.net"))
-	client, err := sender.client()
+	client, _, err := sender.client(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, client.Quit())
 	waitSMTPTestServer(t, done)
@@ -393,7 +394,7 @@ func TestEmail_ClientTLSHELOHost(t *testing.T) {
 	})
 
 	sender := NewSender(host, Port(port), TLS(true), InsecureSkipVerify(true), HELOHost("client.example.net"))
-	client, err := sender.client()
+	client, _, err := sender.client(context.Background())
 	require.NoError(t, err)
 	require.NoError(t, client.Quit())
 	waitSMTPTestServer(t, done)
