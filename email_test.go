@@ -227,10 +227,8 @@ func TestEmail_ClientHELOFailureClosesConnection(t *testing.T) {
 
 	sender := NewSender(host, Port(port), HELOHost("client.example.net"))
 	client, err := sender.client()
-	if client != nil {
-		_ = client.Close()
-	}
 	require.Error(t, err)
+	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "failed to send SMTP greeting")
 	assert.Contains(t, err.Error(), "550")
 	assert.Contains(t, err.Error(), "HELO rejected")
@@ -268,10 +266,8 @@ func TestEmail_ClientSTARTTLSFailureClosesConnection(t *testing.T) {
 
 	sender := NewSender(host, Port(port), STARTTLS(true), HELOHost("client.example.net"))
 	client, err := sender.client()
-	if client != nil {
-		_ = client.Close()
-	}
 	require.Error(t, err)
+	assert.Nil(t, client)
 	assert.Contains(t, err.Error(), "failed to start tls")
 	assert.Contains(t, err.Error(), "454")
 	assert.Contains(t, err.Error(), "TLS unavailable")

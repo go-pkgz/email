@@ -99,7 +99,7 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 }
 
 // Send email with given text
-// If SMTPClient defined in Email struct it will be used, if not - new smtp.Client on each send.
+// If SMTPClient set with the SMTP option it will be used, if not - new smtp.Client on each send.
 // Always closes client on completion or failure.
 func (em *Sender) Send(text string, params Params) error {
 	em.logger.Logf("[DEBUG] send %q to %v", text, params.To)
