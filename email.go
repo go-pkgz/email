@@ -155,8 +155,7 @@ func (em *Sender) Send(text string, params Params) error {
 		return fmt.Errorf("can't make email writer: %w", err)
 	}
 
-	buf := bytes.NewBufferString(msg)
-	if _, err = buf.WriteTo(writer); err != nil {
+	if _, err = msg.WriteTo(writer); err != nil {
 		return fmt.Errorf("failed to send email body to %q: %w", params.To, err)
 	}
 	// closing the writer reports the final response to the DATA command, i.e. the actual delivery result
@@ -299,82 +298,83 @@ func (params Params) validateHeaders() error {
 	return nil
 }
 
-func (em *Sender) buildMessage(text string, params Params) (message string, err error) {
-	if e := params.validateHeaders(); e != nil {
-		return "", e
+// buildMessage makes the complete message, headers and body, in a single buffer the caller sends as is
+func (em *Sender) buildMessage(text string, params Params) (*bytes.Buffer, error) {
+	if err := params.validateHeaders(); err != nil {
+		return nil, err
 	}
-
-	addHeader := func(msg, h, v string) string {
-		msg += fmt.Sprintf("%s: %s\n", h, v)
-		return msg
-	}
-	message = addHeader(message, "From", params.From)
-	message = addHeader(message, "To", strings.Join(params.To, ","))
-	message = addHeader(message, "Subject", mime.BEncoding.Encode("utf-8", params.Subject))
-
-	if params.UnsubscribeLink != "" {
-		message = addHeader(message, "List-Unsubscribe-Post", "List-Unsubscribe=One-Click")
-		message = addHeader(message, "List-Unsubscribe", "<"+params.UnsubscribeLink+">")
-	}
-
-	if params.InReplyTo != "" {
-		message = addHeader(message, "In-reply-to", "<"+params.InReplyTo+">")
-	}
-
-	withAttachments := len(params.Attachments) > 0
-	withInlineImg := len(params.InlineImages) > 0
-
-	if em.contentType != "" || withAttachments || withInlineImg {
-		message = addHeader(message, "MIME-version", "1.0")
-	}
-
-	message = addHeader(message, "Date", em.timeNow().Format(time.RFC1123Z))
 
 	buff := &bytes.Buffer{}
+	addHeader := func(h, v string) {
+		fmt.Fprintf(buff, "%s: %s\n", h, v)
+	}
+
+	// body writers are made upfront because the boundaries they pick are needed in the headers,
+	// they write nothing until used, i.e. after all the headers are in the buffer
 	qp := quotedprintable.NewWriter(buff)
 	mpMixed := multipart.NewWriter(buff)
 	boundaryMixed := mpMixed.Boundary()
 	mpRelated := multipart.NewWriter(buff)
 	boundaryRelated := mpRelated.Boundary()
 
+	addHeader("From", params.From)
+	addHeader("To", strings.Join(params.To, ","))
+	addHeader("Subject", mime.BEncoding.Encode("utf-8", params.Subject))
+
+	if params.UnsubscribeLink != "" {
+		addHeader("List-Unsubscribe-Post", "List-Unsubscribe=One-Click")
+		addHeader("List-Unsubscribe", "<"+params.UnsubscribeLink+">")
+	}
+
+	if params.InReplyTo != "" {
+		addHeader("In-reply-to", "<"+params.InReplyTo+">")
+	}
+
+	withAttachments := len(params.Attachments) > 0
+	withInlineImg := len(params.InlineImages) > 0
+
+	if em.contentType != "" || withAttachments || withInlineImg {
+		addHeader("MIME-version", "1.0")
+	}
+
+	addHeader("Date", em.timeNow().Format(time.RFC1123Z))
+
 	if withAttachments {
-		message = addHeader(message, "Content-Type", fmt.Sprintf("multipart/mixed; boundary=%q\r\n\r\n%s\r",
+		addHeader("Content-Type", fmt.Sprintf("multipart/mixed; boundary=%q\r\n\r\n%s\r",
 			boundaryMixed, "--"+boundaryMixed))
 	}
 
 	if withInlineImg {
-		message = addHeader(message, "Content-Type", fmt.Sprintf("multipart/related; boundary=%q\r\n\r\n%s\r",
+		addHeader("Content-Type", fmt.Sprintf("multipart/related; boundary=%q\r\n\r\n%s\r",
 			boundaryRelated, "--"+boundaryRelated))
 	}
 
 	if em.contentType != "" {
-		message = addHeader(message, "Content-Transfer-Encoding", "quoted-printable")
-		message = addHeader(message, "Content-Type", fmt.Sprintf("%s; charset=%q", em.contentType, em.contentCharset))
-
+		addHeader("Content-Transfer-Encoding", "quoted-printable")
+		addHeader("Content-Type", fmt.Sprintf("%s; charset=%q", em.contentType, em.contentCharset))
 	}
 
+	buff.WriteString("\n") // empty line between the headers and the body
+
 	if err := em.writeBody(qp, text); err != nil {
-		return "", fmt.Errorf("failed to write body: %w", err)
+		return nil, fmt.Errorf("failed to write body: %w", err)
 	}
 
 	if withInlineImg {
 		buff.WriteString("\r\n\r\n")
 		if err := em.writeFiles(mpRelated, params.InlineImages, "inline"); err != nil {
-			return "", fmt.Errorf("failed to write inline images: %w", err)
+			return nil, fmt.Errorf("failed to write inline images: %w", err)
 		}
 	}
 
 	if withAttachments {
 		buff.WriteString("\r\n\r\n")
 		if err := em.writeFiles(mpMixed, params.Attachments, "attachment"); err != nil {
-			return "", fmt.Errorf("failed to write attachments: %w", err)
+			return nil, fmt.Errorf("failed to write attachments: %w", err)
 		}
 	}
 
-	m := buff.String()
-	message += "\n" + m
-	// returns base part of the file location
-	return message, nil
+	return buff, nil
 }
 
 func (em *Sender) writeBody(wc io.WriteCloser, text string) error {

@@ -795,12 +795,12 @@ func TestEmail_buildMessage(t *testing.T) {
 		Subject: "subj",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com,to2@example.com\nSubject: subj\n", msg)
-	assert.Contains(t, msg, "this is a test\r\n12345", msg)
-	assert.Contains(t, msg, "Date: ", msg)
-	assert.Contains(t, msg, "Content-Transfer-Encoding: quoted-printable", msg)
+	assert.Contains(t, msg.String(), "From: from@example.com\nTo: to@example.com,to2@example.com\nSubject: subj\n", msg.String())
+	assert.Contains(t, msg.String(), "this is a test\r\n12345", msg.String())
+	assert.Contains(t, msg.String(), "Date: ", msg.String())
+	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: quoted-printable", msg.String())
 
-	tree := parseMIMETree(t, msg)
+	tree := parseMIMETree(t, msg.String())
 	assert.Equal(t, "text/plain", tree.mediaType)
 	assert.Empty(t, tree.children)
 }
@@ -817,10 +817,10 @@ func TestEmail_buildMessageWithMIME(t *testing.T) {
 		InReplyTo:       "uuid@example.com",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, msg, "Content-Transfer-Encoding: quoted-printable\nContent-Type: text/html; charset=\"UTF-8\"", msg)
-	assert.Contains(t, msg, "From: from@example.com\nTo: to@example.com\nSubject: =?utf-8?b?bm9uLWFzY2lpIHN5bWJvbHM6INCf0YDQuNCy0LXRgg==?=\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\nList-Unsubscribe: <https://example.com/unsubscribe>\nIn-reply-to: <uuid@example.com>\nMIME-version: 1.0", msg)
-	assert.Contains(t, msg, "\n\nthis is a test\r\n12345\r\n", msg)
-	assert.Contains(t, msg, "Date: ", msg)
+	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: quoted-printable\nContent-Type: text/html; charset=\"UTF-8\"", msg.String())
+	assert.Contains(t, msg.String(), "From: from@example.com\nTo: to@example.com\nSubject: =?utf-8?b?bm9uLWFzY2lpIHN5bWJvbHM6INCf0YDQuNCy0LXRgg==?=\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\nList-Unsubscribe: <https://example.com/unsubscribe>\nIn-reply-to: <uuid@example.com>\nMIME-version: 1.0", msg.String())
+	assert.Contains(t, msg.String(), "\n\nthis is a test\r\n12345\r\n", msg.String())
+	assert.Contains(t, msg.String(), "Date: ", msg.String())
 }
 
 func TestEmail_buildMessageWithMIMEAndAttachments(t *testing.T) {
@@ -840,15 +840,15 @@ func TestEmail_buildMessageWithMIMEAndAttachments(t *testing.T) {
 		Attachments: []string{"testdata/1.txt", "testdata/2.txt", "testdata/image.jpg"},
 	})
 	require.NoError(t, err)
-	tree := parseMIMETree(t, msg)
+	tree := parseMIMETree(t, msg.String())
 	require.Equal(t, "multipart/mixed", tree.mediaType)
 	body, ok := tree.firstChild("text/html")
 	require.True(t, ok, "html body part present under mixed")
 	assert.Empty(t, body.disposition)
 	assert.Len(t, tree.childrenByDisposition("attachment"), 3)
-	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"1.txt\"", msg)
-	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"2.txt\"", msg)
-	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"image.jpg\"", msg)
+	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"1.txt\"", msg.String())
+	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"2.txt\"", msg.String())
+	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"image.jpg\"", msg.String())
 
 	fData1, err := os.ReadFile("testdata/1.txt")
 	require.NoError(t, err)
@@ -863,9 +863,9 @@ func TestEmail_buildMessageWithMIMEAndAttachments(t *testing.T) {
 	base64.StdEncoding.Encode(b2, fData2)
 	b3 := make([]byte, base64.StdEncoding.EncodedLen(len(fData3)))
 	base64.StdEncoding.Encode(b3, fData3)
-	assert.Contains(t, msg, string(b1), msg)
-	assert.Contains(t, msg, string(b2), msg)
-	assert.Contains(t, msg, string(b3), msg)
+	assert.Contains(t, msg.String(), string(b1), msg.String())
+	assert.Contains(t, msg.String(), string(b2), msg.String())
+	assert.Contains(t, msg.String(), string(b3), msg.String())
 }
 
 func TestEmail_buildMessageWithMIMEAndWrongAttachments(t *testing.T) {
@@ -887,7 +887,7 @@ func TestEmail_buildMessageWithMIMEAndWrongAttachments(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, "failed to write attachments: "+
 		"open does/not/exist/1.txt: no such file or directory", err.Error())
-	require.Empty(t, msg)
+	require.Nil(t, msg)
 
 	msg, err = e.buildMessage("<div>this is a test mail with attachments\\n12345</div>\\n", Params{
 		From:        "from@example.com",
@@ -898,7 +898,7 @@ func TestEmail_buildMessageWithMIMEAndWrongAttachments(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, "failed to write attachments: failed to read file type \"testdata/nullfile\": EOF",
 		err.Error())
-	require.Empty(t, msg)
+	require.Nil(t, msg)
 }
 
 func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
@@ -918,8 +918,8 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 		InlineImages: []string{"testdata/image.jpg"},
 	})
 	require.NoError(t, err)
-	assert.Contains(t, msg, "MIME-version: 1.0", msg)
-	tree := parseMIMETree(t, msg)
+	assert.Contains(t, msg.String(), "MIME-version: 1.0", msg.String())
+	tree := parseMIMETree(t, msg.String())
 	require.Equal(t, "multipart/related", tree.mediaType)
 	body, ok := tree.firstChild("text/html")
 	require.True(t, ok, "html body part present under related")
@@ -928,15 +928,15 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 	require.True(t, ok, "inline image part present under related")
 	assert.Equal(t, "inline", img.disposition)
 	assert.Equal(t, "<image.jpg>", img.contentID)
-	assert.Contains(t, msg, "Content-Disposition: inline; filename=\"image.jpg\"", msg)
-	assert.Contains(t, msg, "Content-Id: <image.jpg>", msg)
-	assert.Contains(t, msg, "Content-Transfer-Encoding: base64", msg)
+	assert.Contains(t, msg.String(), "Content-Disposition: inline; filename=\"image.jpg\"", msg.String())
+	assert.Contains(t, msg.String(), "Content-Id: <image.jpg>", msg.String())
+	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: base64", msg.String())
 	fData, err := os.ReadFile("testdata/image.jpg")
 	require.NoError(t, err)
 
 	b := make([]byte, base64.StdEncoding.EncodedLen(len(fData)))
 	base64.StdEncoding.Encode(b, fData)
-	assert.Contains(t, msg, string(b), msg)
+	assert.Contains(t, msg.String(), string(b), msg.String())
 }
 
 func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
@@ -957,8 +957,8 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 		InlineImages: []string{"testdata/image.jpg"},
 	})
 	require.NoError(t, err)
-	assert.Contains(t, msg, "MIME-version: 1.0", msg)
-	tree := parseMIMETree(t, msg)
+	assert.Contains(t, msg.String(), "MIME-version: 1.0", msg.String())
+	tree := parseMIMETree(t, msg.String())
 	require.Equal(t, "multipart/mixed", tree.mediaType)
 	related, ok := tree.firstChild("multipart/related")
 	require.True(t, ok, "related subtree present under mixed")
@@ -970,12 +970,12 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 	assert.Equal(t, "inline", img.disposition)
 	assert.Equal(t, "<image.jpg>", img.contentID)
 	assert.Len(t, tree.childrenByDisposition("attachment"), 3)
-	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"1.txt\"", msg)
-	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"2.txt\"", msg)
-	assert.Contains(t, msg, "Content-Disposition: attachment; filename=\"image.jpg\"", msg)
-	assert.Contains(t, msg, "Content-Disposition: inline; filename=\"image.jpg\"", msg)
-	assert.Contains(t, msg, "Content-Id: <image.jpg>", msg)
-	assert.Contains(t, msg, "Content-Transfer-Encoding: base64", msg)
+	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"1.txt\"", msg.String())
+	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"2.txt\"", msg.String())
+	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"image.jpg\"", msg.String())
+	assert.Contains(t, msg.String(), "Content-Disposition: inline; filename=\"image.jpg\"", msg.String())
+	assert.Contains(t, msg.String(), "Content-Id: <image.jpg>", msg.String())
+	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: base64", msg.String())
 
 	fData1, err := os.ReadFile("testdata/1.txt")
 	require.NoError(t, err)
@@ -990,9 +990,9 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 	base64.StdEncoding.Encode(b2, fData2)
 	b3 := make([]byte, base64.StdEncoding.EncodedLen(len(fData3)))
 	base64.StdEncoding.Encode(b3, fData3)
-	assert.Contains(t, msg, string(b1), msg)
-	assert.Contains(t, msg, string(b2), msg)
-	assert.Contains(t, msg, string(b3), msg)
+	assert.Contains(t, msg.String(), string(b1), msg.String())
+	assert.Contains(t, msg.String(), string(b2), msg.String())
+	assert.Contains(t, msg.String(), string(b3), msg.String())
 }
 
 func TestWriteAttachmentsFailed(t *testing.T) {
