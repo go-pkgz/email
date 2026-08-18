@@ -20,6 +20,8 @@ import (
 	"net/mail"
 	"net/smtp"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -845,7 +847,8 @@ func TestEmail_buildMessageWithMIMEAndAttachments(t *testing.T) {
 	body, ok := tree.firstChild("text/html")
 	require.True(t, ok, "html body part present under mixed")
 	assert.Empty(t, body.disposition)
-	assert.Len(t, tree.childrenByDisposition("attachment"), 3)
+	attachments := tree.childrenByDisposition("attachment")
+	require.Len(t, attachments, 3)
 	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"1.txt\"", msg.String())
 	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"2.txt\"", msg.String())
 	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"image.jpg\"", msg.String())
@@ -856,16 +859,9 @@ func TestEmail_buildMessageWithMIMEAndAttachments(t *testing.T) {
 	require.NoError(t, err)
 	fData3, err := os.ReadFile("testdata/image.jpg")
 	require.NoError(t, err)
-
-	b1 := make([]byte, base64.StdEncoding.EncodedLen(len(fData1)))
-	base64.StdEncoding.Encode(b1, fData1)
-	b2 := make([]byte, base64.StdEncoding.EncodedLen(len(fData2)))
-	base64.StdEncoding.Encode(b2, fData2)
-	b3 := make([]byte, base64.StdEncoding.EncodedLen(len(fData3)))
-	base64.StdEncoding.Encode(b3, fData3)
-	assert.Contains(t, msg.String(), string(b1), msg.String())
-	assert.Contains(t, msg.String(), string(b2), msg.String())
-	assert.Contains(t, msg.String(), string(b3), msg.String())
+	assert.Equal(t, fData1, attachments[0].content, "1.txt decodes back to the file content")
+	assert.Equal(t, fData2, attachments[1].content, "2.txt decodes back to the file content")
+	assert.Equal(t, fData3, attachments[2].content, "image.jpg decodes back to the file content")
 }
 
 func TestEmail_buildMessageWithMIMEAndWrongAttachments(t *testing.T) {
@@ -933,10 +929,7 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: base64", msg.String())
 	fData, err := os.ReadFile("testdata/image.jpg")
 	require.NoError(t, err)
-
-	b := make([]byte, base64.StdEncoding.EncodedLen(len(fData)))
-	base64.StdEncoding.Encode(b, fData)
-	assert.Contains(t, msg.String(), string(b), msg.String())
+	assert.Equal(t, fData, img.content, "inline image decodes back to the file content")
 }
 
 func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
@@ -967,9 +960,11 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 	assert.Empty(t, htmlBody.disposition)
 	img, ok := related.firstChild("image/jpeg")
 	require.True(t, ok, "inline image inside related, not directly under mixed")
+	require.Len(t, related.childrenByDisposition("inline"), 1)
 	assert.Equal(t, "inline", img.disposition)
 	assert.Equal(t, "<image.jpg>", img.contentID)
-	assert.Len(t, tree.childrenByDisposition("attachment"), 3)
+	attachments := tree.childrenByDisposition("attachment")
+	require.Len(t, attachments, 3)
 	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"1.txt\"", msg.String())
 	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"2.txt\"", msg.String())
 	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"image.jpg\"", msg.String())
@@ -983,16 +978,74 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 	require.NoError(t, err)
 	fData3, err := os.ReadFile("testdata/image.jpg")
 	require.NoError(t, err)
+	assert.Equal(t, fData1, attachments[0].content, "1.txt decodes back to the file content")
+	assert.Equal(t, fData2, attachments[1].content, "2.txt decodes back to the file content")
+	assert.Equal(t, fData3, attachments[2].content, "image.jpg decodes back to the file content")
+}
 
-	b1 := make([]byte, base64.StdEncoding.EncodedLen(len(fData1)))
-	base64.StdEncoding.Encode(b1, fData1)
-	b2 := make([]byte, base64.StdEncoding.EncodedLen(len(fData2)))
-	base64.StdEncoding.Encode(b2, fData2)
-	b3 := make([]byte, base64.StdEncoding.EncodedLen(len(fData3)))
-	base64.StdEncoding.Encode(b3, fData3)
-	assert.Contains(t, msg.String(), string(b1), msg.String())
-	assert.Contains(t, msg.String(), string(b2), msg.String())
-	assert.Contains(t, msg.String(), string(b3), msg.String())
+func TestEmail_buildMessageAttachmentLineLength(t *testing.T) {
+	e := NewSender("localhost", ContentType("text/html"))
+
+	// 57 bytes make exactly 76 base64 characters, i.e. the longest line mime allows
+	dir := t.TempDir()
+	sizes := []int{1, 57, 58, 1024}
+	files := make([]string, 0, len(sizes))
+	for _, size := range sizes {
+		name := filepath.Join(dir, fmt.Sprintf("attachment-%d.bin", size))
+		require.NoError(t, os.WriteFile(name, bytes.Repeat([]byte{'x'}, size), 0o600))
+		files = append(files, name)
+	}
+
+	msg, err := e.buildMessage("this is a test\n", Params{
+		From:        "from@example.com",
+		To:          []string{"to@example.com"},
+		Subject:     "subj",
+		Attachments: files,
+	})
+	require.NoError(t, err)
+
+	base64Line := regexp.MustCompile(`^[A-Za-z0-9+/=]+$`)
+	for i, line := range strings.Split(msg.String(), "\r\n") {
+		if !base64Line.MatchString(line) {
+			continue
+		}
+		assert.LessOrEqual(t, len(line), base64LineLimit, "base64 line %d is too long: %q", i, line)
+	}
+
+	tree := parseMIMETree(t, msg.String())
+	attachments := tree.childrenByDisposition("attachment")
+	require.Len(t, attachments, len(sizes))
+	for i, size := range sizes {
+		assert.Equal(t, bytes.Repeat([]byte{'x'}, size), attachments[i].content, "attachment of %d bytes", size)
+	}
+}
+
+func TestLineWrapper(t *testing.T) {
+	tests := []struct {
+		name     string
+		writes   []string
+		expected string
+	}{
+		{"short single write", []string{"12345"}, "12345"},
+		{"exactly the limit", []string{"1234567890"}, "1234567890"},
+		{"over the limit", []string{"123456789012"}, "1234567890\r\n12"},
+		{"split over writes", []string{"12345", "6789012"}, "1234567890\r\n12"},
+		{"several lines", []string{"123456789012345678901"}, "1234567890\r\n1234567890\r\n1"},
+		{"nothing written", []string{}, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buff := &bytes.Buffer{}
+			lw := &lineWrapper{w: buff, limit: 10}
+			for _, w := range tt.writes {
+				n, err := lw.Write([]byte(w))
+				require.NoError(t, err)
+				assert.Equal(t, len(w), n, "all the bytes given are reported as written")
+			}
+			assert.Equal(t, tt.expected, buff.String())
+		})
+	}
 }
 
 func TestWriteAttachmentsFailed(t *testing.T) {
@@ -1185,6 +1238,7 @@ type mimeNode struct {
 	mediaType   string
 	disposition string
 	contentID   string
+	content     []byte // decoded content of a leaf part
 	children    []mimeNode
 }
 
@@ -1215,15 +1269,23 @@ func parseMIMETree(t *testing.T, raw string) mimeNode {
 	t.Helper()
 	m, err := mail.ReadMessage(strings.NewReader(raw))
 	require.NoError(t, err)
-	return readMIMENode(t, m.Header.Get("Content-Type"), "", "", m.Body)
+	return readMIMENode(t, m.Header.Get("Content-Type"), "", "", "", m.Body)
 }
 
-func readMIMENode(t *testing.T, contentType, disposition, contentID string, body io.Reader) mimeNode {
+func readMIMENode(t *testing.T, contentType, disposition, contentID, encoding string, body io.Reader) mimeNode {
 	t.Helper()
 	mediaType, params, err := mime.ParseMediaType(contentType)
 	require.NoError(t, err)
 	node := mimeNode{mediaType: mediaType, disposition: disposition, contentID: contentID}
 	if !strings.HasPrefix(mediaType, "multipart/") {
+		content, readErr := io.ReadAll(body)
+		require.NoError(t, readErr)
+		if strings.EqualFold(encoding, "base64") { // the decoder ignores the line breaks mime requires
+			decoded, decodeErr := base64.StdEncoding.DecodeString(string(content))
+			require.NoError(t, decodeErr, "part content is valid base64")
+			content = decoded
+		}
+		node.content = content
 		return node
 	}
 	mr := multipart.NewReader(body, params["boundary"])
@@ -1237,7 +1299,8 @@ func readMIMENode(t *testing.T, contentType, disposition, contentID string, body
 		if d := p.Header.Get("Content-Disposition"); d != "" {
 			disp, _, _ = mime.ParseMediaType(d)
 		}
-		node.children = append(node.children, readMIMENode(t, p.Header.Get("Content-Type"), disp, p.Header.Get("Content-Id"), p))
+		node.children = append(node.children,
+			readMIMENode(t, p.Header.Get("Content-Type"), disp, p.Header.Get("Content-Id"), p.Header.Get("Content-Transfer-Encoding"), p))
 	}
 	return node
 }

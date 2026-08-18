@@ -442,11 +442,50 @@ func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string
 		return err
 	}
 
-	encoder := base64.NewEncoder(base64.StdEncoding, writer)
+	encoder := base64.NewEncoder(base64.StdEncoding, &lineWrapper{w: writer, limit: base64LineLimit})
 	if _, err = io.Copy(encoder, file); err != nil {
 		return err
 	}
 	return encoder.Close()
+}
+
+// base64LineLimit is the maximum line length for base64 encoded mime parts, set by RFC 2045
+const base64LineLimit = 76
+
+// crlf is shared by the line wrapper to keep it from allocating a separator for every line
+var crlf = []byte("\r\n")
+
+// lineWrapper breaks the stream written to it into lines of limit characters, separated by CRLF.
+// Base64 encoders produce a single unbroken line, which mime doesn't allow and strict relays reject.
+type lineWrapper struct {
+	w     io.Writer
+	limit int
+	n     int // characters already written to the current line
+}
+
+func (lw *lineWrapper) Write(p []byte) (int, error) {
+	written := 0
+	for len(p) > 0 {
+		if lw.n == lw.limit {
+			if _, err := lw.w.Write(crlf); err != nil {
+				return written, err
+			}
+			lw.n = 0
+		}
+
+		size := lw.limit - lw.n
+		if size > len(p) {
+			size = len(p)
+		}
+		n, err := lw.w.Write(p[:size])
+		written += n
+		lw.n += n
+		if err != nil {
+			return written, err
+		}
+		p = p[size:]
+	}
+	return written, nil
 }
 
 type nopLogger struct{}
