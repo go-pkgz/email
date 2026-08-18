@@ -627,6 +627,97 @@ func TestEmail_SendFailed(t *testing.T) {
 	}
 }
 
+func TestEmail_SendHeaderInjection(t *testing.T) {
+	injected := "victim@example.net (x\r\nSubject: Security notice\r\nContent-Type: text/html\r\n\r\n<a href=\"https://attacker.example/\">click</a>"
+
+	tests := []struct {
+		name   string
+		params Params
+		expErr string
+	}{
+		{
+			name:   "CRLF in recipient",
+			params: Params{From: "from@example.com", To: []string{injected}, Subject: "subj"},
+			expErr: "invalid To header value",
+		},
+		{
+			name:   "CRLF in one of the recipients",
+			params: Params{From: "from@example.com", To: []string{"to@example.com", injected}, Subject: "subj"},
+			expErr: "invalid To header value",
+		},
+		{
+			name:   "CRLF in sender",
+			params: Params{From: "from@example.com\r\nBcc: attacker@example.net", To: []string{"to@example.com"}},
+			expErr: "invalid From header value",
+		},
+		{
+			name:   "CRLF in subject",
+			params: Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj\r\nBcc: attacker@example.net"},
+			expErr: "invalid Subject header value",
+		},
+		{
+			name: "CRLF in unsubscribe link",
+			params: Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj",
+				UnsubscribeLink: "https://example.com/unsubscribe>\r\nBcc: attacker@example.net"},
+			expErr: "invalid List-Unsubscribe header value",
+		},
+		{
+			name: "LF in in-reply-to",
+			params: Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj",
+				InReplyTo: "uuid@example.com>\nBcc: attacker@example.net"},
+			expErr: "invalid In-reply-to header value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+			smtpClient := &mocks.SMTPClientMock{
+				AuthFunc:  func(_ smtp.Auth) error { return nil },
+				CloseFunc: func() error { return nil },
+				MailFunc:  func(string) error { return nil },
+				QuitFunc:  func() error { return nil },
+				RcptFunc:  func(_ string) error { return nil },
+				DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+			}
+
+			s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+			err := s.Send("some text\n", tt.params)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expErr)
+
+			assert.Empty(t, smtpClient.MailCalls(), "rejected before talking to the server")
+			assert.Empty(t, smtpClient.RcptCalls())
+			assert.Empty(t, smtpClient.DataCalls())
+			assert.Empty(t, wc.buff.String(), "nothing sent")
+		})
+	}
+}
+
+func TestEmail_SendNoDataOnBadMessage(t *testing.T) {
+	wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+	smtpClient := &mocks.SMTPClientMock{
+		AuthFunc:  func(_ smtp.Auth) error { return nil },
+		CloseFunc: func() error { return nil },
+		MailFunc:  func(string) error { return nil },
+		QuitFunc:  func() error { return nil },
+		RcptFunc:  func(_ string) error { return nil },
+		DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+	}
+
+	s := NewSender("localhost", ContentType("text/html"), SMTP(smtpClient))
+	err := s.Send("some text\n", Params{
+		From:        "from@example.com",
+		To:          []string{"to@example.com"},
+		Subject:     "subj",
+		Attachments: []string{"does/not/exist/1.txt"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "can't make email message")
+	assert.Empty(t, smtpClient.DataCalls(), "message is built before the data command")
+	assert.Empty(t, smtpClient.MailCalls())
+}
+
 func TestEmail_buildMessage(t *testing.T) {
 	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
 		fmt.Printf(format, args...)
