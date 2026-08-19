@@ -850,9 +850,7 @@ func TestEmail_buildMessageWithMIMEAndAttachments(t *testing.T) {
 	assert.Empty(t, body.disposition)
 	attachments := tree.childrenByDisposition("attachment")
 	require.Len(t, attachments, 3)
-	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"1.txt\"", msg.String())
-	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"2.txt\"", msg.String())
-	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"image.jpg\"", msg.String())
+	assert.Equal(t, []string{"1.txt", "2.txt", "image.jpg"}, attachmentNames(tree.childrenByDisposition("attachment")))
 
 	fData1, err := os.ReadFile("testdata/1.txt")
 	require.NoError(t, err)
@@ -898,7 +896,7 @@ func TestEmail_buildMessageWithEmptyAttachment(t *testing.T) {
 		Attachments: []string{"testdata/nullfile", "testdata/1.txt"},
 	})
 	require.NoError(t, err, "an empty file is a valid attachment")
-	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"nullfile\"", msg.String())
+	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=nullfile", msg.String())
 
 	tree := parseMIMETree(t, msg.String())
 	attachments := tree.childrenByDisposition("attachment")
@@ -938,7 +936,7 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 	require.True(t, ok, "inline image part present under related")
 	assert.Equal(t, "inline", img.disposition)
 	assert.Equal(t, "<image.jpg>", img.contentID)
-	assert.Contains(t, msg.String(), "Content-Disposition: inline; filename=\"image.jpg\"", msg.String())
+	assert.Equal(t, []string{"image.jpg"}, attachmentNames(tree.childrenByDisposition("inline")))
 	assert.Contains(t, msg.String(), "Content-Id: <image.jpg>", msg.String())
 	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: base64", msg.String())
 	fData, err := os.ReadFile("testdata/image.jpg")
@@ -979,10 +977,8 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 	assert.Equal(t, "<image.jpg>", img.contentID)
 	attachments := tree.childrenByDisposition("attachment")
 	require.Len(t, attachments, 3)
-	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"1.txt\"", msg.String())
-	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"2.txt\"", msg.String())
-	assert.Contains(t, msg.String(), "Content-Disposition: attachment; filename=\"image.jpg\"", msg.String())
-	assert.Contains(t, msg.String(), "Content-Disposition: inline; filename=\"image.jpg\"", msg.String())
+	assert.Equal(t, []string{"1.txt", "2.txt", "image.jpg"}, attachmentNames(tree.childrenByDisposition("attachment")))
+	assert.Equal(t, []string{"image.jpg"}, attachmentNames(related.childrenByDisposition("inline")))
 	assert.Contains(t, msg.String(), "Content-Id: <image.jpg>", msg.String())
 	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: base64", msg.String())
 
@@ -995,6 +991,70 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 	assert.Equal(t, fData1, attachments[0].content, "1.txt decodes back to the file content")
 	assert.Equal(t, fData2, attachments[1].content, "2.txt decodes back to the file content")
 	assert.Equal(t, fData3, attachments[2].content, "image.jpg decodes back to the file content")
+}
+
+func TestEmail_buildMessageFileNameInjection(t *testing.T) {
+	e := NewSender("localhost", ContentType("text/html"))
+	dir := t.TempDir()
+
+	write := func(t *testing.T, name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte("attachment body"), 0o600))
+		return path
+	}
+
+	t.Run("CRLF in the file name is rejected", func(t *testing.T) {
+		path := write(t, "invoice.pdf\"\r\nX-Injected: yes\r\n\r\ninjected body\r\n")
+
+		msg, err := e.buildMessage("body", Params{
+			From:        "from@example.com",
+			To:          []string{"to@example.com"},
+			Subject:     "subj",
+			Attachments: []string{path},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "contains CR or LF")
+		require.Nil(t, msg)
+	})
+
+	t.Run("CRLF in an inline image name is rejected", func(t *testing.T) {
+		path := write(t, "img.jpg\r\nContent-ID: <spoofed>\r\n")
+
+		msg, err := e.buildMessage("body", Params{
+			From:         "from@example.com",
+			To:           []string{"to@example.com"},
+			Subject:      "subj",
+			InlineImages: []string{path},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "contains CR or LF")
+		require.Nil(t, msg)
+	})
+
+	t.Run("quotes, spaces and non-ascii survive intact", func(t *testing.T) {
+		names := []string{`in"voice pdf.txt`, "счёт.txt", "semi;colon.txt"}
+		paths := make([]string, 0, len(names))
+		for _, name := range names {
+			paths = append(paths, write(t, name))
+		}
+
+		msg, err := e.buildMessage("body", Params{
+			From:        "from@example.com",
+			To:          []string{"to@example.com"},
+			Subject:     "subj",
+			Attachments: paths,
+		})
+		require.NoError(t, err)
+
+		tree := parseMIMETree(t, msg.String())
+		attachments := tree.childrenByDisposition("attachment")
+		require.Len(t, attachments, len(names), "one part per attachment, nothing injected")
+		assert.Equal(t, names, attachmentNames(attachments), "file names round-trip through the headers")
+		for _, part := range attachments {
+			assert.Equal(t, []byte("attachment body"), part.content)
+		}
+	})
 }
 
 func TestEmail_buildMessageAttachmentLineLength(t *testing.T) {
@@ -1272,6 +1332,7 @@ func TestExtractEmailAddress(t *testing.T) {
 type mimeNode struct {
 	mediaType   string
 	disposition string
+	fileName    string
 	contentID   string
 	content     []byte // decoded content of a leaf part
 	children    []mimeNode
@@ -1294,6 +1355,15 @@ func (n mimeNode) childrenByDisposition(disposition string) []mimeNode {
 		if c.disposition == disposition {
 			res = append(res, c)
 		}
+	}
+	return res
+}
+
+// attachmentNames returns the file names of the given parts, in order
+func attachmentNames(parts []mimeNode) []string {
+	res := make([]string, 0, len(parts))
+	for _, p := range parts {
+		res = append(res, p.fileName)
 	}
 	return res
 }
@@ -1330,12 +1400,15 @@ func readMIMENode(t *testing.T, contentType, disposition, contentID, encoding st
 			break
 		}
 		require.NoError(t, err)
-		disp := ""
+		disp, fileName := "", ""
 		if d := p.Header.Get("Content-Disposition"); d != "" {
-			disp, _, _ = mime.ParseMediaType(d)
+			var dispParams map[string]string
+			disp, dispParams, _ = mime.ParseMediaType(d)
+			fileName = dispParams["filename"]
 		}
-		node.children = append(node.children,
-			readMIMENode(t, p.Header.Get("Content-Type"), disp, p.Header.Get("Content-Id"), p.Header.Get("Content-Transfer-Encoding"), p))
+		child := readMIMENode(t, p.Header.Get("Content-Type"), disp, p.Header.Get("Content-Id"), p.Header.Get("Content-Transfer-Encoding"), p)
+		child.fileName = fileName
+		node.children = append(node.children, child)
 	}
 	return node
 }
