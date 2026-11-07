@@ -60,7 +60,7 @@ type Params struct {
 
 // Logger is used to log errors and debug messages
 type Logger interface {
-	Logf(format string, args ...interface{})
+	Logf(format string, args ...any)
 }
 
 // SMTPClient interface defines subset of net/smtp used by email client
@@ -71,6 +71,56 @@ type SMTPClient interface {
 	Data() (io.WriteCloser, error)
 	Quit() error
 	Close() error
+}
+
+// SMTPResetter is implemented by SMTP clients able to abort a failed transaction with RSET, as smtp.Client does.
+// SendBatch needs it to carry on with the next message after one fails, and stops at the first failure without it.
+type SMTPResetter interface {
+	Reset() error
+}
+
+// Message is a single email for SendBatch, with the same text and params Send takes
+type Message struct {
+	Text   string
+	Params Params
+}
+
+// BatchError is returned by SendBatch when some of the messages were not sent.
+// Errs has an entry for every message, in the order they were passed, nil for the sent ones.
+type BatchError struct {
+	Errs []error
+}
+
+// Error lists the failed messages by their index in the batch
+func (e *BatchError) Error() string {
+	var failed []string
+	for i, err := range e.Errs {
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("message %d: %v", i, err))
+		}
+	}
+	return fmt.Sprintf("failed to send %d of %d messages: %s", len(failed), len(e.Errs), strings.Join(failed, "; "))
+}
+
+// Is reports whether the error of any failed message matches target, it makes errors.Is look into the batch.
+// Is and As are used in place of a multi-error Unwrap, which errors.Is and errors.As don't follow before Go 1.20.
+func (e *BatchError) Is(target error) bool {
+	for _, err := range e.Errs {
+		if err != nil && errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// As finds the first failed message error that matches target and sets target to it, for errors.As
+func (e *BatchError) As(target any) bool {
+	for _, err := range e.Errs {
+		if err != nil && errors.As(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewSender creates email client with prepared smtp
@@ -149,18 +199,155 @@ func (em *Sender) SendContext(ctx context.Context, text string, params Params) e
 		client = c
 	}
 
-	if auth := em.auth(); auth != nil {
-		if err = client.Auth(auth); err != nil {
-			return fmt.Errorf("failed to auth to smtp %s:%d, %w", em.host, em.port, err)
+	if err := em.authenticate(client); err != nil {
+		return err
+	}
+
+	if err := em.transaction(client, msg, params); err != nil {
+		return err
+	}
+
+	quit = em.quit(client)
+	return nil
+}
+
+// SendBatch sends messages one after another over a single SMTP connection, authenticating once,
+// and ends the session with QUIT after the last one. The connection and the context are the same as for SendContext:
+// the whole batch is terminated as soon as ctx is done.
+//
+// A message the server rejects doesn't stop the batch when the client implements SMTPResetter, smtp.Client does;
+// a broken connection, a client without RSET or a done ctx leave that message and the rest of the batch unsent.
+// It returns nil when every message is sent and *BatchError, telling which ones were not, when any failed
+// after the session was set up. Any other error means the session couldn't be set up and nothing was sent.
+func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
+	em.logger.Logf("[DEBUG] send batch of %d messages", len(msgs))
+
+	client := em.smtpClient // set by the SMTP option, nil when SendBatch makes its own client below
+
+	var quit bool
+	defer func() {
+		if quit || client == nil {
+			return
+		}
+		if e := client.Close(); e != nil {
+			em.logger.Logf("[WARN] can't close smtp connection, %v", e)
+		}
+	}()
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	if client == nil {
+		c, stop, err := em.client(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to make smtp client: %w", err)
+		}
+		defer stop()
+		client = c
+	}
+
+	if err := em.authenticate(client); err != nil {
+		return err
+	}
+
+	errs := make([]error, len(msgs))
+	failed := false
+	for i, m := range msgs {
+		if err := ctx.Err(); err != nil {
+			fillUnsent(errs[i:], err)
+			failed = true
+			break
+		}
+
+		em.logger.Logf("[DEBUG] send batch message %d, %q to %v", i, m.Text, m.Params.To)
+		err := em.sendMessage(client, m)
+		if err == nil {
+			continue
+		}
+		errs[i], failed = err, true
+
+		var msgErr *messageError
+		if errors.As(err, &msgErr) {
+			continue // the message was rejected before any SMTP command, the session is untouched
+		}
+		if rerr := em.reset(client, err); rerr != nil {
+			fillUnsent(errs[i+1:], fmt.Errorf("not sent, the session ended after message %d failed: %w", i, rerr))
+			break
 		}
 	}
 
-	if err = client.Mail(extractEmailAddress(params.From)); err != nil {
+	quit = em.quit(client)
+	if failed {
+		return &BatchError{Errs: errs}
+	}
+	return nil
+}
+
+// messageError is a message rejected before it reached the server, recipients or content
+type messageError struct{ err error }
+
+func (e *messageError) Error() string { return e.err.Error() }
+func (e *messageError) Unwrap() error { return e.err }
+
+// sendMessage builds a batch message and sends it in its own transaction
+func (em *Sender) sendMessage(client SMTPClient, m Message) error {
+	if len(m.Params.To) == 0 {
+		return &messageError{err: errors.New("no recipients")}
+	}
+	msg, err := em.buildMessage(m.Text, m.Params)
+	if err != nil {
+		return &messageError{err: fmt.Errorf("can't make email message: %w", err)}
+	}
+	return em.transaction(client, msg, m.Params)
+}
+
+// reset aborts the failed transaction so the next message can start a new one.
+// It returns an error when the session can't go on: the connection broke, or the client has no RSET.
+func (em *Sender) reset(client SMTPClient, failure error) error {
+	var reply *textproto.Error
+	if !errors.As(failure, &reply) { // no reply from the server, i.e. the connection broke mid-transaction
+		return failure
+	}
+	r, ok := client.(SMTPResetter)
+	if !ok {
+		return errors.New("smtp client can't reset the transaction")
+	}
+	if err := r.Reset(); err != nil {
+		return fmt.Errorf("failed to reset smtp transaction: %w", err)
+	}
+	return nil
+}
+
+func fillUnsent(errs []error, err error) {
+	for i := range errs {
+		errs[i] = err
+	}
+}
+
+// authenticate logs in to the server, if credentials are set
+func (em *Sender) authenticate(client SMTPClient) error {
+	auth := em.auth()
+	if auth == nil {
+		return nil
+	}
+	if err := client.Auth(auth); err != nil {
+		return fmt.Errorf("failed to auth to smtp %s:%d, %w", em.host, em.port, err)
+	}
+	return nil
+}
+
+// transaction sends a single message, from MAIL to the end of DATA, on a ready session
+func (em *Sender) transaction(client SMTPClient, msg *bytes.Buffer, params Params) error {
+	if err := client.Mail(extractEmailAddress(params.From)); err != nil {
 		return fmt.Errorf("bad from address %q: %w", params.From, err)
 	}
 
 	for _, rcpt := range params.To {
-		if err = client.Rcpt(extractEmailAddress(rcpt)); err != nil {
+		if err := client.Rcpt(extractEmailAddress(rcpt)); err != nil {
 			return fmt.Errorf("bad to address %q: %w", params.To, err)
 		}
 	}
@@ -177,13 +364,16 @@ func (em *Sender) SendContext(ctx context.Context, text string, params Params) e
 	if err = writer.Close(); err != nil {
 		return fmt.Errorf("failed to send email to %q: %w", params.To, err)
 	}
-
-	if err = client.Quit(); err != nil {
-		em.logger.Logf("[WARN] failed to send quit command to %s:%d, %v", em.host, em.port, err)
-	} else {
-		quit = true
-	}
 	return nil
+}
+
+// quit ends the session, it reports whether QUIT passed, closing the connection as well
+func (em *Sender) quit(client SMTPClient) bool {
+	if err := client.Quit(); err != nil {
+		em.logger.Logf("[WARN] failed to send quit command to %s:%d, %v", em.host, em.port, err)
+		return false
+	}
+	return true
 }
 
 // extractEmailAddress extracts the email address from a string that may contain a display name.
@@ -542,4 +732,4 @@ func (lw *lineWrapper) Write(p []byte) (int, error) {
 
 type nopLogger struct{}
 
-func (nopLogger) Logf(_ string, _ ...interface{}) {}
+func (nopLogger) Logf(_ string, _ ...any) {}

@@ -35,7 +35,7 @@ import (
 
 func TestEmail_New(t *testing.T) {
 	logBuff := bytes.NewBuffer(nil)
-	logger := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+	logger := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) {
 		_, _ = fmt.Fprintf(logBuff, format, args...)
 	}}
 
@@ -787,7 +787,7 @@ func TestEmail_SendNoDataOnBadMessage(t *testing.T) {
 }
 
 func TestEmail_buildMessage(t *testing.T) {
-	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) {
 		fmt.Printf(format, args...)
 		fmt.Printf("\n")
 	}}
@@ -827,7 +827,7 @@ func TestEmail_buildMessageWithMIME(t *testing.T) {
 }
 
 func TestEmail_buildMessageWithMIMEAndAttachments(t *testing.T) {
-	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) {
 		fmt.Printf(format, args...)
 		fmt.Printf("\n")
 	}}
@@ -864,7 +864,7 @@ func TestEmail_buildMessageWithMIMEAndAttachments(t *testing.T) {
 }
 
 func TestEmail_buildMessageWithMIMEAndWrongAttachments(t *testing.T) {
-	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) {
 		fmt.Printf(format, args...)
 		fmt.Printf("\n")
 	}}
@@ -910,7 +910,7 @@ func TestEmail_buildMessageWithEmptyAttachment(t *testing.T) {
 }
 
 func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
-	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) {
 		fmt.Printf(format, args...)
 		fmt.Printf("\n")
 	}}
@@ -945,7 +945,7 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 }
 
 func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
-	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...interface{}) {
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) {
 		fmt.Printf(format, args...)
 		fmt.Printf("\n")
 	}}
