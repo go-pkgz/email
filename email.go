@@ -60,7 +60,7 @@ type Params struct {
 
 // Logger is used to log errors and debug messages
 type Logger interface {
-	Logf(format string, args ...interface{})
+	Logf(format string, args ...any)
 }
 
 // SMTPClient interface defines subset of net/smtp used by email client
@@ -542,4 +542,4 @@ func (lw *lineWrapper) Write(p []byte) (int, error) {
 
 type nopLogger struct{}
 
-func (nopLogger) Logf(_ string, _ ...interface{}) {}
+func (nopLogger) Logf(_ string, _ ...any) {}
