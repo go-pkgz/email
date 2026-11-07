@@ -242,6 +242,23 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 		assert.Len(t, client.MailCalls(), 1)
 	})
 
+	t.Run("rejected as ctx is done keeps the server reply", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		mock := newBatchClientMock()
+		mock.RcptFunc = func(string) error { cancel(); return rejected }
+		client := newResettableClient(mock, nil)
+		sender := NewSender("localhost", SMTP(client))
+		err := sender.SendBatch(ctx, []Message{msg("a@example.com"), msg("b@example.com")})
+
+		var batchErr *BatchError
+		require.ErrorAs(t, err, &batchErr)
+		require.ErrorIs(t, batchErr.Errs[0], rejected)
+		require.NotErrorIs(t, batchErr.Errs[0], context.Canceled)
+		require.ErrorIs(t, batchErr.Errs[1], context.Canceled)
+		assert.Empty(t, client.ResetCalls())
+	})
+
 	t.Run("session not set up, nothing sent", func(t *testing.T) {
 		client := newBatchClientMock()
 		client.AuthFunc = func(smtp.Auth) error { return errors.New("bad credentials") }

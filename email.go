@@ -276,8 +276,11 @@ func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
 		if errors.As(err, &msgErr) {
 			continue // the message was rejected before any SMTP command, the session is untouched
 		}
-		if cerr := ctxDone(ctx); cerr != nil { // a done ctx closes a connection made here under the message in flight
-			errs[i] = fmt.Errorf("%w: %v", cerr, err)
+		if cerr := ctxDone(ctx); cerr != nil {
+			var reply *textproto.Error
+			if !errors.As(err, &reply) { // a done ctx closes a connection made here under the message in flight
+				errs[i] = fmt.Errorf("%w: %v", cerr, err)
+			}
 			em.fillUnsent(errs[i+1:], cerr)
 			break
 		}
