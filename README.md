@@ -71,6 +71,24 @@ err := client.SendContext(ctx, "some content", email.Params{From: "me@example.co
 A custom smtp client set with the `SMTP` option owns its connection, and such a transaction can't be
 terminated in the middle; the context is checked before it starts in that case.
 
+`SendBatch` sends several messages over a single connection, authenticating once. A message the server rejects
+doesn't stop the batch; the returned `*email.BatchError` tells which messages were not sent:
+
+```go
+err := client.SendBatch(ctx, []email.Message{
+	{Text: "first", Params: email.Params{From: "me@example.com", To: []string{"one@example.com"}}},
+	{Text: "second", Params: email.Params{From: "me@example.com", To: []string{"two@example.com"}}},
+})
+var batchErr *email.BatchError
+if errors.As(err, &batchErr) {
+	for i, e := range batchErr.Errs {
+		if e != nil {
+			log.Printf("message %d not sent: %v", i, e)
+		}
+	}
+}
+```
+
 ## technical details
 
 - Content-Transfer-Encoding set to `quoted-printable`
