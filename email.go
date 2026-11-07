@@ -85,7 +85,7 @@ type Message struct {
 	Params Params
 }
 
-// BatchError is returned by SendBatch when some of the messages were not sent.
+// BatchError is returned by SendBatch when some of the messages failed.
 // Errs has an entry for every message, in the order they were passed, nil for the sent ones.
 type BatchError struct {
 	Errs []error
