@@ -21,7 +21,7 @@ import (
 )
 
 func TestEmail_SendBatch(t *testing.T) {
-	var delivered []string // recipients of the messages the server accepted, in order
+	var delivered []string
 	var resets int
 	host, port, done := startSMTPTestServer(t, func(conn net.Conn) error {
 		if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
@@ -37,7 +37,7 @@ func TestEmail_SendBatch(t *testing.T) {
 			response := "250 ok"
 			switch {
 			case strings.HasPrefix(cmd, "MAIL FROM:"):
-				if inTransaction { // a real server refuses a new transaction until the previous one ends
+				if inTransaction {
 					response = "503 nested MAIL command"
 					break
 				}
@@ -81,7 +81,7 @@ func TestEmail_SendBatch(t *testing.T) {
 		{Text: "second", Params: Params{From: "from@example.com", To: []string{"unknown@example.com"}, Subject: "subj"}},
 		{Text: "third", Params: Params{From: "from@example.com", To: []string{"three@example.com"}, Subject: "subj"}},
 	})
-	waitSMTPTestServer(t, done) // the test server accepts a single connection, so all messages went over one
+	waitSMTPTestServer(t, done)
 
 	var batchErr *BatchError
 	require.ErrorAs(t, err, &batchErr)
@@ -97,16 +97,13 @@ func TestEmail_SendBatch(t *testing.T) {
 	assert.True(t, strings.HasPrefix(err.Error(), `failed to send 1 of 3 messages: message 1: bad to address ["unknown@example.com"]: 550`), err.Error())
 }
 
-// resettableClient is an SMTP client mock with RSET support, like smtp.Client
 type resettableClient struct {
 	*mocks.SMTPClientMock
-	resetErr error
-	resets   int
+	*mocks.ResetterMock
 }
 
-func (c *resettableClient) Reset() error {
-	c.resets++
-	return c.resetErr
+func newResettableClient(client *mocks.SMTPClientMock, resetErr error) *resettableClient {
+	return &resettableClient{SMTPClientMock: client, ResetterMock: &mocks.ResetterMock{ResetFunc: func() error { return resetErr }}}
 }
 
 func newBatchClientMock() *mocks.SMTPClientMock {
@@ -138,7 +135,7 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 	})
 
 	t.Run("bad message skipped before any smtp command", func(t *testing.T) {
-		client := newBatchClientMock() // no RSET support, the session must not need it
+		client := newBatchClientMock()
 		sender := NewSender("localhost", SMTP(client))
 		bad := msg("b@example.com")
 		bad.Params.Attachments = []string{"testdata/no-such-file"}
@@ -162,7 +159,7 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 			}
 			return nil
 		}
-		client := &resettableClient{SMTPClientMock: mock}
+		client := newResettableClient(mock, nil)
 		sender := NewSender("localhost", SMTP(client))
 		err := sender.SendBatch(context.Background(), []Message{msg("unknown@example.com"), msg("b@example.com")})
 
@@ -172,7 +169,7 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 		require.ErrorAs(t, batchErr.Errs[0], &reply)
 		assert.Equal(t, 550, reply.Code)
 		require.NoError(t, batchErr.Errs[1])
-		assert.Equal(t, 1, client.resets)
+		assert.Len(t, client.ResetCalls(), 1)
 		assert.Len(t, mock.DataCalls(), 1)
 	})
 
@@ -199,7 +196,7 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 	t.Run("failed reset stops the batch", func(t *testing.T) {
 		mock := newBatchClientMock()
 		mock.RcptFunc = func(string) error { return rejected }
-		client := &resettableClient{SMTPClientMock: mock, resetErr: errors.New("reset failed")}
+		client := newResettableClient(mock, errors.New("reset failed"))
 		sender := NewSender("localhost", SMTP(client))
 		err := sender.SendBatch(context.Background(), []Message{msg("a@example.com"), msg("b@example.com")})
 
@@ -207,14 +204,14 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 		require.ErrorAs(t, err, &batchErr)
 		require.ErrorIs(t, batchErr.Errs[0], rejected)
 		require.ErrorContains(t, batchErr.Errs[1], "failed to reset smtp transaction: reset failed")
-		assert.Equal(t, 1, client.resets)
+		assert.Len(t, client.ResetCalls(), 1)
 		assert.Len(t, mock.MailCalls(), 1)
 	})
 
 	t.Run("broken connection stops the batch without rset", func(t *testing.T) {
 		mock := newBatchClientMock()
 		mock.DataFunc = func() (io.WriteCloser, error) { return &fakeWriterCloser{buff: &bytes.Buffer{}, fail: true}, nil }
-		client := &resettableClient{SMTPClientMock: mock}
+		client := newResettableClient(mock, nil)
 		sender := NewSender("localhost", SMTP(client))
 		err := sender.SendBatch(context.Background(), []Message{msg("a@example.com"), msg("b@example.com")})
 
@@ -223,7 +220,7 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 		require.ErrorContains(t, batchErr.Errs[0], "failed to send email body")
 		require.ErrorContains(t, batchErr.Errs[1], "the session ended after message 0 failed")
 		require.ErrorContains(t, batchErr.Errs[1], "write error")
-		assert.Zero(t, client.resets, "no RSET into a connection stuck in DATA")
+		assert.Empty(t, client.ResetCalls(), "no RSET into a connection stuck in DATA")
 		assert.Len(t, mock.MailCalls(), 1)
 	})
 
@@ -232,7 +229,7 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 		defer cancel()
 		client := newBatchClientMock()
 		client.QuitFunc = func() error { return nil }
-		client.MailFunc = func(string) error { cancel(); return nil } // the first transaction cancels the batch
+		client.MailFunc = func(string) error { cancel(); return nil }
 		sender := NewSender("localhost", SMTP(client))
 		err := sender.SendBatch(ctx, []Message{msg("a@example.com"), msg("b@example.com"), msg("c@example.com")})
 

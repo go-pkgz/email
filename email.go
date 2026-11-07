@@ -27,6 +27,7 @@ import (
 
 //go:generate moq -out mocks/smpt_client.go -pkg mocks -skip-ensure -fmt goimports . SMTPClient
 //go:generate moq -out mocks/logger.go -pkg mocks -skip-ensure -fmt goimports . Logger
+//go:generate moq -out mocks/resetter.go -pkg mocks -skip-ensure -fmt goimports . resetter:ResetterMock
 
 // Sender implements email sender
 type Sender struct {
@@ -73,9 +74,8 @@ type SMTPClient interface {
 	Close() error
 }
 
-// SMTPResetter is implemented by SMTP clients able to abort a failed transaction with RSET, as smtp.Client does.
-// SendBatch needs it to carry on with the next message after one fails, and stops at the first failure without it.
-type SMTPResetter interface {
+// resetter is implemented by SMTP clients able to abort a failed transaction with RSET, as smtp.Client does
+type resetter interface {
 	Reset() error
 }
 
@@ -215,9 +215,11 @@ func (em *Sender) SendContext(ctx context.Context, text string, params Params) e
 // and ends the session with QUIT after the last one. The connection and the context are the same as for SendContext:
 // the whole batch is terminated as soon as ctx is done.
 //
-// A message the server rejects doesn't stop the batch when the client implements SMTPResetter, smtp.Client does;
-// a broken connection, a client without RSET or a done ctx leave that message and the rest of the batch unsent.
-// It returns nil when every message is sent and *BatchError, telling which ones were not, when any failed
+// A message the server rejects doesn't stop the batch when the client aborts the failed transaction with
+// a Reset() error method, as smtp.Client does; a custom client set with the SMTP option without that method
+// stops the batch at the first message the server rejects. A broken connection or a done ctx stop the batch:
+// the message in flight fails, though it may have been delivered already, and the rest are not sent.
+// It returns nil when every message is sent and *BatchError, telling which ones failed, when any failed
 // after the session was set up. Any other error means the session couldn't be set up and nothing was sent.
 func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
 	em.logger.Logf("[DEBUG] send batch of %d messages", len(msgs))
@@ -258,7 +260,7 @@ func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
 	failed := false
 	for i, m := range msgs {
 		if err := ctx.Err(); err != nil {
-			fillUnsent(errs[i:], err)
+			em.fillUnsent(errs[i:], err)
 			failed = true
 			break
 		}
@@ -276,11 +278,11 @@ func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
 		}
 		if cerr := ctxDone(ctx); cerr != nil { // a done ctx closes a connection made here under the message in flight
 			errs[i] = fmt.Errorf("%w: %v", cerr, err)
-			fillUnsent(errs[i+1:], cerr)
+			em.fillUnsent(errs[i+1:], cerr)
 			break
 		}
 		if rerr := em.reset(client, err); rerr != nil {
-			fillUnsent(errs[i+1:], fmt.Errorf("not sent, the session ended after message %d failed: %w", i, rerr))
+			em.fillUnsent(errs[i+1:], fmt.Errorf("not sent, the session ended after message %d failed: %w", i, rerr))
 			break
 		}
 	}
@@ -310,7 +312,6 @@ type messageError struct{ err error }
 func (e *messageError) Error() string { return e.err.Error() }
 func (e *messageError) Unwrap() error { return e.err }
 
-// sendMessage builds a batch message and sends it in its own transaction
 func (em *Sender) sendMessage(client SMTPClient, m Message) error {
 	if len(m.Params.To) == 0 {
 		return &messageError{err: errors.New("no recipients")}
@@ -329,7 +330,7 @@ func (em *Sender) reset(client SMTPClient, failure error) error {
 	if !errors.As(failure, &reply) { // no reply from the server, i.e. the connection broke mid-transaction
 		return failure
 	}
-	r, ok := client.(SMTPResetter)
+	r, ok := client.(resetter)
 	if !ok {
 		return errors.New("smtp client can't reset the transaction")
 	}
@@ -339,13 +340,12 @@ func (em *Sender) reset(client SMTPClient, failure error) error {
 	return nil
 }
 
-func fillUnsent(errs []error, err error) {
+func (em *Sender) fillUnsent(errs []error, err error) {
 	for i := range errs {
 		errs[i] = err
 	}
 }
 
-// authenticate logs in to the server, if credentials are set
 func (em *Sender) authenticate(client SMTPClient) error {
 	auth := em.auth()
 	if auth == nil {
@@ -357,7 +357,6 @@ func (em *Sender) authenticate(client SMTPClient) error {
 	return nil
 }
 
-// transaction sends a single message, from MAIL to the end of DATA, on a ready session
 func (em *Sender) transaction(client SMTPClient, msg *bytes.Buffer, params Params) error {
 	if err := client.Mail(extractEmailAddress(params.From)); err != nil {
 		return fmt.Errorf("bad from address %q: %w", params.From, err)
