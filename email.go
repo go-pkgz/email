@@ -274,6 +274,11 @@ func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
 		if errors.As(err, &msgErr) {
 			continue // the message was rejected before any SMTP command, the session is untouched
 		}
+		if cerr := ctxDone(ctx); cerr != nil { // a done ctx closes a connection made here under the message in flight
+			errs[i] = fmt.Errorf("%w: %v", cerr, err)
+			fillUnsent(errs[i+1:], cerr)
+			break
+		}
 		if rerr := em.reset(client, err); rerr != nil {
 			fillUnsent(errs[i+1:], fmt.Errorf("not sent, the session ended after message %d failed: %w", i, rerr))
 			break
@@ -283,6 +288,18 @@ func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
 	quit = em.quit(client)
 	if failed {
 		return &BatchError{Errs: errs}
+	}
+	return nil
+}
+
+// ctxDone returns the ctx error, also when the deadline has passed and ctx.Err isn't set yet:
+// the connection made by client has the same deadline, which can fire before the one of ctx
+func ctxDone(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
 	}
 	return nil
 }

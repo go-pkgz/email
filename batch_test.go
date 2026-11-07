@@ -276,6 +276,84 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 	})
 }
 
+func TestEmail_SendBatchCanceledInFlight(t *testing.T) {
+	stalledServer := func(t *testing.T) (host string, port int, done <-chan error, stalled <-chan struct{}) {
+		stalledCh := make(chan struct{})
+		host, port, done = startSMTPTestServer(t, func(conn net.Conn) error {
+			if err := writeSMTPResponse(conn, "220 smtp.example.net ESMTP ready"); err != nil {
+				return err
+			}
+			reader := bufio.NewReader(conn)
+			for {
+				cmd, err := readSMTPCommand(reader)
+				if err != nil {
+					return err
+				}
+				if cmd == "DATA" {
+					if e := writeSMTPResponse(conn, "354 send the message"); e != nil {
+						return e
+					}
+					for line := ""; line != "."; {
+						if line, err = readSMTPCommand(reader); err != nil {
+							return err
+						}
+					}
+					close(stalledCh)
+					_, err = io.Copy(io.Discard, conn) // the message is received and never answered
+					return err
+				}
+				if err := writeSMTPResponse(conn, "250 ok"); err != nil {
+					return err
+				}
+			}
+		})
+		return host, port, done, stalledCh
+	}
+	msgs := []Message{
+		{Text: "first", Params: Params{From: "from@example.com", To: []string{"one@example.com"}, Subject: "subj"}},
+		{Text: "second", Params: Params{From: "from@example.com", To: []string{"two@example.com"}, Subject: "subj"}},
+	}
+
+	tbl := []struct {
+		name   string
+		ctx    func(stalled <-chan struct{}) (context.Context, context.CancelFunc)
+		ctxErr error
+	}{
+		{name: "canceled", ctxErr: context.Canceled, ctx: func(stalled <-chan struct{}) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() {
+				<-stalled
+				cancel()
+			}()
+			return ctx, cancel
+		}},
+		{name: "deadline", ctxErr: context.DeadlineExceeded, ctx: func(<-chan struct{}) (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), time.Millisecond*200)
+		}},
+	}
+
+	for _, tt := range tbl {
+		t.Run(tt.name, func(t *testing.T) {
+			host, port, done, stalled := stalledServer(t)
+			ctx, cancel := tt.ctx(stalled)
+			defer cancel()
+
+			sender := NewSender(host, Port(port), TimeOut(time.Minute))
+			st := time.Now()
+			err := sender.SendBatch(ctx, msgs)
+			assert.Less(t, time.Since(st), time.Second*3, "batch ended with the context")
+			waitSMTPTestServer(t, done)
+
+			require.ErrorIs(t, err, tt.ctxErr)
+			var batchErr *BatchError
+			require.ErrorAs(t, err, &batchErr)
+			require.ErrorIs(t, batchErr.Errs[0], tt.ctxErr)
+			require.ErrorContains(t, batchErr.Errs[0], "failed to send email")
+			require.ErrorIs(t, batchErr.Errs[1], tt.ctxErr)
+		})
+	}
+}
+
 func TestEmail_SendBatchNoServer(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
