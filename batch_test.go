@@ -11,6 +11,7 @@ import (
 	"net/smtp"
 	"net/textproto"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -104,6 +105,19 @@ type resettableClient struct {
 
 func newResettableClient(client *mocks.SMTPClientMock, resetErr error) *resettableClient {
 	return &resettableClient{SMTPClientMock: client, ResetterMock: &mocks.ResetterMock{ResetFunc: func() error { return resetErr }}}
+}
+
+// passingDeadlineCtx has its deadline passed once passed is set, while Err is still nil
+type passingDeadlineCtx struct {
+	context.Context
+	passed atomic.Bool
+}
+
+func (c *passingDeadlineCtx) Deadline() (time.Time, bool) {
+	if c.passed.Load() {
+		return time.Now().Add(-time.Second), true
+	}
+	return time.Now().Add(time.Hour), true
 }
 
 func newBatchClientMock() *mocks.SMTPClientMock {
@@ -257,6 +271,44 @@ func TestEmail_SendBatchWithClient(t *testing.T) {
 		require.NotErrorIs(t, batchErr.Errs[0], context.Canceled)
 		require.ErrorIs(t, batchErr.Errs[1], context.Canceled)
 		assert.Empty(t, client.ResetCalls())
+	})
+
+	t.Run("ctx done during reset after a rejection", func(t *testing.T) {
+		tbl := []struct {
+			name   string
+			ctx    func() (ctx context.Context, end func())
+			ctxErr error
+		}{
+			{name: "canceled", ctx: func() (context.Context, func()) {
+				ctx, cancel := context.WithCancel(context.Background())
+				return ctx, cancel
+			}, ctxErr: context.Canceled},
+			{name: "deadline", ctx: func() (context.Context, func()) {
+				ctx := &passingDeadlineCtx{Context: context.Background()}
+				return ctx, func() { ctx.passed.Store(true) }
+			}, ctxErr: context.DeadlineExceeded},
+		}
+		for _, tt := range tbl {
+			t.Run(tt.name, func(t *testing.T) {
+				ctx, end := tt.ctx()
+				defer end()
+				mock := newBatchClientMock()
+				mock.RcptFunc = func(string) error { return rejected }
+				client := newResettableClient(mock, nil)
+				client.ResetFunc = func() error { end(); return errors.New("connection closed") }
+				sender := NewSender("localhost", SMTP(client))
+				err := sender.SendBatch(ctx, []Message{msg("a@example.com"), msg("b@example.com")})
+
+				var batchErr *BatchError
+				require.ErrorAs(t, err, &batchErr)
+				require.ErrorIs(t, batchErr.Errs[0], rejected)
+				require.NotErrorIs(t, batchErr.Errs[0], tt.ctxErr)
+				require.ErrorIs(t, batchErr.Errs[1], tt.ctxErr)
+				require.ErrorContains(t, batchErr.Errs[1], "connection closed")
+				require.ErrorIs(t, err, tt.ctxErr)
+				assert.Len(t, client.ResetCalls(), 1)
+			})
+		}
 	})
 
 	t.Run("session not set up, nothing sent", func(t *testing.T) {

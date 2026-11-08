@@ -285,6 +285,9 @@ func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
 			break
 		}
 		if rerr := em.reset(client, err); rerr != nil {
+			if cerr := ctxDone(ctx); cerr != nil {
+				rerr = fmt.Errorf("%w: %v", cerr, rerr)
+			}
 			em.fillUnsent(errs[i+1:], fmt.Errorf("not sent, the session ended after message %d failed: %w", i, rerr))
 			break
 		}
