@@ -365,7 +365,7 @@ func TestEmail_SendBatchCanceledInFlight(t *testing.T) {
 						}
 					}
 					close(stalledCh)
-					_, err = io.Copy(io.Discard, conn) // the message is received and never answered
+					_, err = io.Copy(io.Discard, conn)
 					return err
 				}
 				if err := writeSMTPResponse(conn, "250 ok"); err != nil {
