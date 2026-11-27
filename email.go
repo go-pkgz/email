@@ -51,10 +51,10 @@ type Sender struct {
 // Params contains all user-defined parameters to send emails
 type Params struct {
 	From            string   // from email field
-	To              []string // from email field
+	To              []string // recipients, each "addr" or "Name <addr>"
 	Subject         string   // email subject
 	UnsubscribeLink string   // POST, https://support.google.com/mail/answer/81126 -> "Use one-click unsubscribe"
-	InReplyTo       string   // identifier for email group (category), used for email grouping
+	InReplyTo       string   // Message-ID of the message this one replies to, without angle brackets; written as In-Reply-To
 	Attachments     []string // attachments path
 	InlineImages    []string // inline images path, the HTML refers to the image N of the list as cid:N.name, see the README
 }

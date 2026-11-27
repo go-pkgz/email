@@ -26,13 +26,18 @@ err := client.Send("<html>some content, foo bar</html>",
 - `InsecureSkipVerify`: skip certificate verification (default: false)
 - `HELOHost`: SMTP HELO/EHLO hostname (default: empty, greets as `localhost`). Some servers reject `localhost`,
   e.g. Postfix with `reject_non_fqdn_helo_hostname`. Not applied to a custom client set with `SMTP`.
-- `Auth(user, password)`: Username and password for SMTP authentication (default: empty, no authentication)
+- `Auth(user, password)`: Username and password for SMTP authentication (default: empty, no authentication).
+  Authentication needs an encrypted connection (`TLS` or `STARTTLS`) unless the server is `localhost`, `127.0.0.1`
+  or `::1`; it is skipped when the user name or the password is empty.
 - `LoginAuth`: Use [LOGIN mechanism](https://www.ietf.org/archive/id/draft-murchison-sasl-login-00.txt) instead of PLAIN mechanism for SMTP authentication, e.g. this is relevant for Office 365 and Outlook.com
-- `ContentType`: Content type for the email (default: "text/plain")
+- `ContentType`: Content type for the email (default: "text/plain", also used when set empty)
 - `Charset`: Charset for the email (default: "utf-8")
-- `TimeOut`: Timeout for the SMTP connection (default: 30 seconds)
+- `TimeOut`: Timeout for the TCP connect and, with `TLS`, the TLS handshake (default: 30 seconds); use `SendContext`
+  with a deadline to bound the whole send
 - `Log`: Logger to use (default: no logging). The text of a message is not logged, only its length
-- `SMTP`: Set custom smtp client (default: none)
+- `SMTP`: Set custom smtp client (default: none). The client is used for one `Send`, `SendContext` or `SendBatch`
+  call, which closes it at the end, with `QUIT` or with `Close`. Of the options above only `Auth` and `LoginAuth`
+  apply to its connection.
 
 See [go docs](https://pkg.go.dev/github.com/go-pkgz/email#Option) for `Option` functions.
 
@@ -47,10 +52,10 @@ To send email user need to create a sender first and then use `Send` method. The
   ```go
   type Params struct {
       From            string   // From email field
-      To              []string // From email field
+      To              []string // Recipients, each "addr" or "Name <addr>"
       Subject         string   // Email subject
       UnsubscribeLink string   // POST, https://support.google.com/mail/answer/81126 -> "Use one-click unsubscribe"
-      InReplyTo       string   // Identifier for email group (category), used for email grouping
+      InReplyTo       string   // Message-ID of the message this one replies to, without angle brackets; written as In-Reply-To
       Attachments     []string // Attachments path
       InlineImages    []string // Embedding directly to email body, referred to by Content-Id (cid), see below
   }
@@ -114,7 +119,7 @@ if batchErr != nil {
 ## technical details
 
 - Content-Transfer-Encoding set to `quoted-printable`
-- Custom SMTP client (`smtp.Client` from stdlib) can be set by user with `SMTP` option. In this case it will be used instead of making a new smtp client internally.
+- Custom SMTP client (`smtp.Client` from stdlib) can be set by user with `SMTP` option. In this case it will be used instead of making a new smtp client internally, for one send: the send closes it at the end, and connection options other than `Auth` and `LoginAuth` do not apply to it.
 - Logger can be set with `Log` option. It should implement `email.Logger` interface with a single `Logf(format string, args ...interface{})` method. By default, "no logging" internal logger is used. This interface is compatible with the `go-pkgz/lgr` logger.
 - The library has no external dependencies, except for testing. It uses the stdlib `net/smtp` package.
 - SSL/TLS supported with `TLS` option (usually on port 465) as well as with `STARTTLS` (usually on port 587).
