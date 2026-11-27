@@ -17,9 +17,11 @@ import (
 	"math/big"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -561,8 +563,42 @@ func TestEmail_SendFailedRCPTO(t *testing.T) {
 		To:      []string{"to@example.com"},
 		Subject: "subj",
 	})
-	require.EqualError(t, err, "bad to address [\"to@example.com\"]: RCPT error")
+	require.EqualError(t, err, "bad to address \"to@example.com\": RCPT error")
 	assert.Len(t, smtpClient.RcptCalls(), 1)
+}
+
+func TestEmail_SendRejectedRecipientNamed(t *testing.T) {
+	smtpClient := &mocks.SMTPClientMock{
+		CloseFunc: func() error { return nil },
+		MailFunc:  func(string) error { return nil },
+		RcptFunc: func(to string) error {
+			if to == "bad@example.com" {
+				return &textproto.Error{Code: 550, Msg: "no such user"}
+			}
+			return nil
+		},
+	}
+
+	s := NewSender("localhost", SMTP(smtpClient))
+	err := s.Send("some text", Params{From: "from@example.com", To: []string{"ok@example.com", `"Bad" <bad@example.com>`, "next@example.com"}})
+	require.ErrorContains(t, err, `bad to address "\"Bad\" <bad@example.com>": 550`)
+	assert.NotContains(t, err.Error(), "ok@example.com", "only the rejected address is named")
+	var reply *textproto.Error
+	require.ErrorAs(t, err, &reply, "the server reply stays reachable")
+	assert.Equal(t, 550, reply.Code)
+	assert.Len(t, smtpClient.RcptCalls(), 2, "stops at the rejected recipient")
+}
+
+func TestEmail_SendConnectionRefused(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, listener.Close())
+
+	s := NewSender("127.0.0.1", Port(port), TimeOut(10*time.Second))
+	err = s.Send("some text", Params{From: "from@example.com", To: []string{"to@example.com"}})
+	require.ErrorContains(t, err, fmt.Sprintf("failed to make smtp client: failed to connect to 127.0.0.1:%d: ", port))
+	assert.NotContains(t, err.Error(), "timeout connecting", "a refused connection is not a timeout")
 }
 
 func TestEmail_SendFailedMakeClient(t *testing.T) {
@@ -798,7 +834,7 @@ func TestEmail_buildMessage(t *testing.T) {
 		Subject: "subj",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, msg.String(), "From: from@example.com\nTo: to@example.com,to2@example.com\nSubject: subj\n", msg.String())
+	assert.Contains(t, msg.String(), "From: from@example.com\nTo: to@example.com, to2@example.com\nSubject: subj\n", msg.String())
 	assert.Contains(t, msg.String(), "this is a test\r\n12345", msg.String())
 	assert.Contains(t, msg.String(), "Date: ", msg.String())
 	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: quoted-printable", msg.String())
@@ -806,6 +842,131 @@ func TestEmail_buildMessage(t *testing.T) {
 	tree := parseMIMETree(t, msg.String())
 	assert.Equal(t, "text/plain", tree.mediaType)
 	assert.Empty(t, tree.children)
+}
+
+func TestEmail_buildMessageEmptyContentType(t *testing.T) {
+	e := NewSender("localhost", ContentType(""))
+	assert.Contains(t, e.String(), `content-type:"text/plain"`)
+	text := "Текст with = sign\n"
+
+	t.Run("text only", func(t *testing.T) {
+		msg, err := e.buildMessage(text, Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj"})
+		require.NoError(t, err)
+		m, err := mail.ReadMessage(strings.NewReader(msg.String()))
+		require.NoError(t, err)
+		assert.Equal(t, "1.0", m.Header.Get("MIME-Version"))
+		assert.Equal(t, "quoted-printable", m.Header.Get("Content-Transfer-Encoding"))
+		assert.Equal(t, `text/plain; charset="UTF-8"`, m.Header.Get("Content-Type"))
+		body, err := io.ReadAll(quotedprintable.NewReader(m.Body))
+		require.NoError(t, err)
+		assert.Equal(t, "Текст with = sign\r\n", string(body), "the body decodes back to the text")
+	})
+
+	t.Run("option applied to a made sender", func(t *testing.T) {
+		s := NewSender("localhost")
+		ContentType("")(s)
+		msg, err := s.buildMessage(text, Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj"})
+		require.NoError(t, err)
+		assert.Contains(t, msg.String(), "\nContent-Type: text/plain; charset=\"UTF-8\"\n")
+	})
+
+	t.Run("with attachment", func(t *testing.T) {
+		msg, err := e.buildMessage(text, Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj",
+			Attachments: []string{"testdata/1.txt"}})
+		require.NoError(t, err)
+		assert.Contains(t, msg.String(), "Content-Transfer-Encoding: quoted-printable\nContent-Type: text/plain; charset=\"UTF-8\"\n")
+		tree := parseMIMETree(t, msg.String())
+		require.Equal(t, "multipart/mixed", tree.mediaType)
+		_, ok := tree.firstChild("text/plain")
+		assert.True(t, ok, "text body part present under mixed")
+	})
+}
+
+func TestEmail_buildMessageAddressDisplayNames(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    string
+		header  string
+		envelop string
+	}{
+		{"bare address", "me@example.com", "me@example.com", "me@example.com"},
+		{"address in angle brackets", "<me@example.com>", "<me@example.com>", "me@example.com"},
+		{"ascii name", `"John Doe" <me@example.com>`, `"John Doe" <me@example.com>`, "me@example.com"},
+		{"ascii name with comma", `"Doe, John" <me@example.com>`, `"Doe, John" <me@example.com>`, "me@example.com"},
+		{"non-ascii name", `"Ünïcode Name" <me@example.com>`, "=?utf-8?q?=C3=9Cn=C3=AFcode_Name?= <me@example.com>", "me@example.com"},
+		{"name encoded already", "=?utf-8?q?=C3=9Cn?= <me@example.com>", "=?utf-8?q?=C3=9Cn?= <me@example.com>", "me@example.com"},
+		{"not an address", "not an address", "not an address", "not an address"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+			smtpClient := &mocks.SMTPClientMock{
+				MailFunc:  func(string) error { return nil },
+				RcptFunc:  func(string) error { return nil },
+				DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+				QuitFunc:  func() error { return nil },
+				CloseFunc: func() error { return nil },
+			}
+			s := NewSender("localhost", SMTP(smtpClient))
+			err := s.Send("some text", Params{From: tt.addr, To: []string{"first@example.com", tt.addr}, Subject: "subj"})
+			require.NoError(t, err)
+
+			assert.Contains(t, wc.buff.String(), "From: "+tt.header+"\nTo: first@example.com, "+tt.header+"\n")
+			require.Len(t, smtpClient.MailCalls(), 1)
+			assert.Equal(t, tt.envelop, smtpClient.MailCalls()[0].From, "envelope sender is the bare address")
+			require.Len(t, smtpClient.RcptCalls(), 2)
+			assert.Equal(t, tt.envelop, smtpClient.RcptCalls()[1].To, "envelope recipient is the bare address")
+
+			if tt.addr == "not an address" {
+				return
+			}
+			m, err := mail.ReadMessage(strings.NewReader(wc.buff.String()))
+			require.NoError(t, err)
+			want, err := mail.ParseAddress(tt.addr)
+			require.NoError(t, err)
+			from, err := m.Header.AddressList("From")
+			require.NoError(t, err)
+			assert.Equal(t, []*mail.Address{want}, from, "the display name decodes back to the original")
+			to, err := m.Header.AddressList("To")
+			require.NoError(t, err)
+			assert.Equal(t, []*mail.Address{{Address: "first@example.com"}, want}, to)
+		})
+	}
+}
+
+func TestJoinAddresses(t *testing.T) {
+	encoded := formatAddress(`"Иван Петров" <a@example.com>`)
+	tests := []struct {
+		name  string
+		addrs []string
+		want  string
+	}{
+		{"single address", []string{"a@example.com"}, "a@example.com"},
+		{"comma and space between addresses", []string{"a@example.com", "b@example.com"}, "a@example.com, b@example.com"},
+		{"whitespace around addresses trimmed", []string{"  a@example.com\t", " b@example.com \t"}, "a@example.com, b@example.com"},
+		{"encoded names separated by a space", []string{encoded, encoded}, encoded + ", " + encoded},
+		{"quoted name with a comma kept whole", []string{"a@example.com", `"Doe, John" <b@example.com>`}, `a@example.com, "Doe, John" <b@example.com>`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := joinAddresses(tt.addrs)
+			assert.Equal(t, tt.want, got)
+
+			m, err := mail.ReadMessage(strings.NewReader("To: " + got + "\n\nbody"))
+			require.NoError(t, err)
+			want := make([]*mail.Address, 0, len(tt.addrs))
+			for _, a := range tt.addrs {
+				parsed, perr := mail.ParseAddress(a)
+				require.NoError(t, perr)
+				want = append(want, parsed)
+			}
+			parsed, err := m.Header.AddressList("To")
+			require.NoError(t, err)
+			assert.Equal(t, want, parsed, "the header reads back as the same addresses")
+		})
+	}
 }
 
 func TestEmail_buildMessageWithMIME(t *testing.T) {

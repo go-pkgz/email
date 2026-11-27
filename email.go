@@ -36,7 +36,7 @@ type Sender struct {
 	host               string     // SMTP host
 	heloHost           string     // SMTP HELO/EHLO host
 	port               int        // SMTP port
-	contentType        string     // content type, optional. Will trigger MIME and Content-Type headers
+	contentType        string     // content type of the text body, text/plain when set empty
 	tls                bool       // TLS auth
 	starttls           bool       // startTLS
 	insecureSkipVerify bool       // insecure Skip Verify
@@ -142,6 +142,9 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 	}
 	for _, opt := range options {
 		opt(&res)
+	}
+	if res.contentType == "" { // the body is always quoted-printable, which needs the headers saying so
+		res.contentType = `text/plain`
 	}
 
 	res.logger.Logf("[INFO] new email sender created with host: %s:%d, helo: %q, tls: %v, insecureSkipVerify: %v, username: %q, timeout: %v, "+
@@ -370,7 +373,7 @@ func (em *Sender) transaction(client SMTPClient, msg *bytes.Buffer, params Param
 
 	for _, rcpt := range params.To {
 		if err := client.Rcpt(extractEmailAddress(rcpt)); err != nil {
-			return fmt.Errorf("bad to address %q: %w", params.To, err)
+			return fmt.Errorf("bad to address %q: %w", rcpt, err)
 		}
 	}
 
@@ -407,6 +410,27 @@ func extractEmailAddress(from string) string {
 		return from
 	}
 	return addr.Address
+}
+
+// formatAddress makes the header value of an address with a display name, encoding a non-ASCII name as RFC 2047 says,
+// so it reaches the recipient intact instead of as raw 8-bit header text.
+// An address without a display name, or one that doesn't parse, is used as given.
+func formatAddress(addr string) string {
+	a, err := mail.ParseAddress(strings.TrimSpace(addr))
+	if err != nil || a.Name == "" {
+		return addr
+	}
+	return a.String()
+}
+
+// joinAddresses joins the addresses of a header with a comma and a space, each trimmed of surrounding whitespace.
+// RFC 2047 needs the space between an encoded display name and the comma before it.
+func joinAddresses(addrs []string) string {
+	trimmed := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		trimmed = append(trimmed, strings.TrimSpace(addr))
+	}
+	return strings.Join(trimmed, ", ")
 }
 
 func (em *Sender) String() string {
@@ -446,7 +470,7 @@ func (em *Sender) client(ctx context.Context) (c *smtp.Client, stop func(), err 
 		}
 	} else {
 		if conn, err = dialer.DialContext(ctx, "tcp", srvAddress); err != nil {
-			return nil, nil, fmt.Errorf("timeout connecting to %s: %w", srvAddress, err)
+			return nil, nil, fmt.Errorf("failed to connect to %s: %w", srvAddress, err)
 		}
 	}
 
@@ -568,8 +592,12 @@ func (em *Sender) buildMessage(text string, params Params) (*bytes.Buffer, error
 	mpRelated := multipart.NewWriter(buff)
 	boundaryRelated := mpRelated.Boundary()
 
-	addHeader("From", params.From)
-	addHeader("To", strings.Join(params.To, ","))
+	addHeader("From", formatAddress(params.From))
+	to := make([]string, 0, len(params.To))
+	for _, rcpt := range params.To {
+		to = append(to, formatAddress(rcpt))
+	}
+	addHeader("To", joinAddresses(to))
 	addHeader("Subject", mime.BEncoding.Encode("utf-8", params.Subject))
 
 	if params.UnsubscribeLink != "" {
@@ -584,10 +612,7 @@ func (em *Sender) buildMessage(text string, params Params) (*bytes.Buffer, error
 	withAttachments := len(params.Attachments) > 0
 	withInlineImg := len(params.InlineImages) > 0
 
-	if em.contentType != "" || withAttachments || withInlineImg {
-		addHeader("MIME-version", "1.0")
-	}
-
+	addHeader("MIME-version", "1.0")
 	addHeader("Date", em.timeNow().Format(time.RFC1123Z))
 
 	if withAttachments {
@@ -600,10 +625,12 @@ func (em *Sender) buildMessage(text string, params Params) (*bytes.Buffer, error
 			boundaryRelated, "--"+boundaryRelated))
 	}
 
-	if em.contentType != "" {
-		addHeader("Content-Transfer-Encoding", "quoted-printable")
-		addHeader("Content-Type", fmt.Sprintf("%s; charset=%q", em.contentType, em.contentCharset))
+	addHeader("Content-Transfer-Encoding", "quoted-printable")
+	contentType := em.contentType
+	if contentType == "" { // set empty by applying the ContentType option to a made sender
+		contentType = `text/plain`
 	}
+	addHeader("Content-Type", fmt.Sprintf("%s; charset=%q", contentType, em.contentCharset))
 
 	buff.WriteString("\n") // empty line between the headers and the body
 

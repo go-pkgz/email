@@ -95,7 +95,7 @@ func TestEmail_SendBatch(t *testing.T) {
 	require.NoError(t, batchErr.Errs[2], "the rejected message is followed by RSET, and the next one goes through")
 	assert.Equal(t, []string{"one@example.com", "three@example.com"}, delivered)
 	assert.Equal(t, 1, resets)
-	assert.True(t, strings.HasPrefix(err.Error(), `failed to send 1 of 3 messages: message 1: bad to address ["unknown@example.com"]: 550`), err.Error())
+	assert.True(t, strings.HasPrefix(err.Error(), `failed to send 1 of 3 messages: message 1: bad to address "unknown@example.com": 550`), err.Error())
 }
 
 type resettableClient struct {
