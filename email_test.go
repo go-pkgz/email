@@ -601,6 +601,82 @@ func TestEmail_SendConnectionRefused(t *testing.T) {
 	assert.NotContains(t, err.Error(), "timeout connecting", "a refused connection is not a timeout")
 }
 
+func TestEmail_SendEmptyRecipient(t *testing.T) {
+	for _, to := range [][]string{{""}, {"to@example.com", ""}, {"to@example.com", " \t"}} {
+		t.Run(fmt.Sprintf("to %q", to), func(t *testing.T) {
+			smtpClient := newBatchClientMock()
+			s := NewSender("localhost", SMTP(smtpClient))
+			err := s.Send("some text", Params{From: "from@example.com", To: to})
+			require.EqualError(t, err, "empty recipient")
+			assert.Empty(t, smtpClient.MailCalls(), "rejected before talking to the server")
+			assert.Empty(t, smtpClient.RcptCalls(), "no RCPT TO:<> for the empty address")
+			assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
+		})
+	}
+
+	t.Run("batch goes on after a message with an empty recipient", func(t *testing.T) {
+		client := newBatchClientMock() // no Reset method, a rejected transaction would stop the batch
+		sender := NewSender("localhost", SMTP(client))
+		err := sender.SendBatch(context.Background(), []Message{
+			{Text: "first", Params: Params{From: "from@example.com", To: []string{"a@example.com", ""}}},
+			{Text: "second", Params: Params{From: "from@example.com", To: []string{"b@example.com"}}},
+		})
+		var batchErr *BatchError
+		require.ErrorAs(t, err, &batchErr)
+		require.EqualError(t, batchErr.Errs[0], "empty recipient")
+		require.NoError(t, batchErr.Errs[1])
+		require.Len(t, client.RcptCalls(), 1, "only the second message reaches the server")
+		assert.Equal(t, "b@example.com", client.RcptCalls()[0].To)
+	})
+}
+
+func TestEmail_SendNoSender(t *testing.T) {
+	for _, from := range []string{"", "  "} {
+		t.Run(fmt.Sprintf("from %q", from), func(t *testing.T) {
+			smtpClient := newBatchClientMock()
+			s := NewSender("localhost", SMTP(smtpClient))
+			err := s.Send("some text", Params{From: from, To: []string{"to@example.com"}})
+			require.EqualError(t, err, "no sender")
+			assert.Empty(t, smtpClient.MailCalls(), "rejected before talking to the server")
+			assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
+		})
+	}
+
+	t.Run("batch goes on after a message without sender", func(t *testing.T) {
+		client := newBatchClientMock() // no Reset method, a rejected transaction would stop the batch
+		sender := NewSender("localhost", SMTP(client))
+		err := sender.SendBatch(context.Background(), []Message{
+			{Text: "first", Params: Params{To: []string{"a@example.com"}}},
+			{Text: "second", Params: Params{From: "from@example.com", To: []string{"b@example.com"}}},
+		})
+		var batchErr *BatchError
+		require.ErrorAs(t, err, &batchErr)
+		require.EqualError(t, batchErr.Errs[0], "no sender")
+		require.NoError(t, batchErr.Errs[1])
+		require.Len(t, client.MailCalls(), 1, "the message without sender never reaches the server")
+		assert.Equal(t, "from@example.com", client.MailCalls()[0].From)
+		assert.Len(t, client.QuitCalls(), 1)
+	})
+}
+
+func TestEmail_SendLogsNoText(t *testing.T) {
+	var lines []string
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }}
+	secret := "password reset code 123456"
+	params := Params{From: "from@example.com", To: []string{"to@example.com"}}
+
+	s := NewSender("localhost", SMTP(newBatchClientMock()), Log(l))
+	require.NoError(t, s.Send(secret, params))
+	require.NoError(t, s.SendBatch(context.Background(), []Message{{Text: secret, Params: params}}))
+
+	require.NotEmpty(t, lines)
+	for _, line := range lines {
+		assert.NotContains(t, line, "123456", "the text is never logged")
+	}
+	assert.Contains(t, lines, "[DEBUG] send 26 bytes to [to@example.com]")
+	assert.Contains(t, lines, "[DEBUG] send batch message 0, 26 bytes to [to@example.com]")
+}
+
 func TestEmail_SendFailedMakeClient(t *testing.T) {
 	{
 		s := NewSender("198.18.0.254", Port(12345), TimeOut(time.Millisecond*200))
@@ -1080,7 +1156,7 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 		Port(2525),
 		Log(l))
 
-	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:image.jpg\"></div>\n", Params{
+	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:0.image.jpg\"></div>\n", Params{
 		From:         "from@example.com",
 		To:           []string{"to@example.com"},
 		Subject:      "test email with attachments",
@@ -1096,9 +1172,9 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 	img, ok := tree.firstChild("image/jpeg")
 	require.True(t, ok, "inline image part present under related")
 	assert.Equal(t, "inline", img.disposition)
-	assert.Equal(t, "<image.jpg>", img.contentID)
+	assert.Equal(t, "<0.image.jpg>", img.contentID)
 	assert.Equal(t, []string{"image.jpg"}, attachmentNames(tree.childrenByDisposition("inline")))
-	assert.Contains(t, msg.String(), "Content-Id: <image.jpg>", msg.String())
+	assert.Contains(t, msg.String(), "Content-Id: <0.image.jpg>", msg.String())
 	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: base64", msg.String())
 	fData, err := os.ReadFile("testdata/image.jpg")
 	require.NoError(t, err)
@@ -1115,7 +1191,7 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 		Port(2525),
 		Log(l))
 
-	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:image.jpg\"></div>\n", Params{
+	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:0.image.jpg\"></div>\n", Params{
 		From:         "from@example.com",
 		To:           []string{"to@example.com"},
 		Subject:      "test email with attachments",
@@ -1135,12 +1211,12 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 	require.True(t, ok, "inline image inside related, not directly under mixed")
 	require.Len(t, related.childrenByDisposition("inline"), 1)
 	assert.Equal(t, "inline", img.disposition)
-	assert.Equal(t, "<image.jpg>", img.contentID)
+	assert.Equal(t, "<0.image.jpg>", img.contentID)
 	attachments := tree.childrenByDisposition("attachment")
 	require.Len(t, attachments, 3)
 	assert.Equal(t, []string{"1.txt", "2.txt", "image.jpg"}, attachmentNames(tree.childrenByDisposition("attachment")))
 	assert.Equal(t, []string{"image.jpg"}, attachmentNames(related.childrenByDisposition("inline")))
-	assert.Contains(t, msg.String(), "Content-Id: <image.jpg>", msg.String())
+	assert.Contains(t, msg.String(), "Content-Id: <0.image.jpg>", msg.String())
 	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: base64", msg.String())
 
 	fData1, err := os.ReadFile("testdata/1.txt")
@@ -1216,6 +1292,44 @@ func TestEmail_buildMessageFileNameInjection(t *testing.T) {
 			assert.Equal(t, []byte("attachment body"), part.content)
 		}
 	})
+}
+
+func TestEmail_buildMessageInlineImageContentID(t *testing.T) {
+	e := NewSender("localhost", ContentType("text/html"))
+	dir, otherDir := t.TempDir(), t.TempDir()
+	write := func(t *testing.T, dir, name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte("image body"), 0o600))
+		return path
+	}
+
+	images := []struct{ path, cid string }{
+		{write(t, dir, "logo.png"), "0.logo.png"},
+		{write(t, otherDir, "logo.png"), "1.logo.png"},
+		{write(t, dir, "my pic.png"), "2.my_pic.png"},
+		{write(t, dir, "angle>bracket.png"), "3.angle_bracket.png"},
+		{write(t, dir, `qu"ote;semi.png`), "4.qu_ote_semi.png"},
+		{write(t, dir, "отчёт.png"), "5._____.png"},
+		{write(t, dir, "a-b_c.1.png"), "6.a-b_c.1.png"},
+	}
+	paths := make([]string, 0, len(images))
+	for _, img := range images {
+		paths = append(paths, img.path)
+	}
+
+	msg, err := e.buildMessage(`<img src="cid:0.logo.png">`, Params{From: "from@example.com", To: []string{"to@example.com"}, InlineImages: paths})
+	require.NoError(t, err)
+	tree := parseMIMETree(t, msg.String())
+	inline := tree.childrenByDisposition("inline")
+	require.Len(t, inline, len(images))
+	validID := regexp.MustCompile(`^<\d+\.[A-Za-z0-9._-]+>$`)
+	for i, part := range inline {
+		assert.Equal(t, "<"+images[i].cid+">", part.contentID, "image %d", i)
+		assert.Regexp(t, validID, part.contentID)
+		assert.Equal(t, []byte("image body"), part.content)
+	}
+	assert.Equal(t, filepath.Base(images[5].path), inline[5].fileName, "the file name itself is kept in the disposition")
 }
 
 func TestEmail_buildMessageAttachmentLineLength(t *testing.T) {
@@ -1345,7 +1459,7 @@ func TestSender_String(t *testing.T) {
 // uncomment to debug with real smtp server
 // func TestSendIntegration(t *testing.T) {
 //	client := NewSender("localhost", ContentType("text/html"), Port(2525))
-//	err := client.Send("<html><div>some content, foo bar</div>\n<div><img src=\"cid:image.jpg\"/>\n</div></html>",
+//	err := client.Send("<html><div>some content, foo bar</div>\n<div><img src=\"cid:0.image.jpg\"/>\n</div></html>",
 //		Params{From: "me@example.com", To: []string{"to@example.com"}, Subject: "Hello world!",
 //			Attachments: []string{"testdata/1.txt", "testdata/2.txt", "testdata/image.jpg"},
 //			InlineImages: []string{"testdata/image.jpg"},

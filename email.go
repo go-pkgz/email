@@ -56,7 +56,7 @@ type Params struct {
 	UnsubscribeLink string   // POST, https://support.google.com/mail/answer/81126 -> "Use one-click unsubscribe"
 	InReplyTo       string   // identifier for email group (category), used for email grouping
 	Attachments     []string // attachments path
-	InlineImages    []string // InlineImages images path
+	InlineImages    []string // inline images path, the HTML refers to the image N of the list as cid:N.name, see the README
 }
 
 // Logger is used to log errors and debug messages
@@ -165,7 +165,7 @@ func (em *Sender) Send(text string, params Params) error {
 // Note that a client set that way owns its connection, so such a transaction can't be terminated in the middle.
 // Always closes client on completion or failure.
 func (em *Sender) SendContext(ctx context.Context, text string, params Params) error {
-	em.logger.Logf("[DEBUG] send %q to %v", text, params.To)
+	em.logger.Logf("[DEBUG] send %d bytes to %v", len(text), params.To) // the text can hold a secret, i.e. a reset code
 
 	client := em.smtpClient // set by the SMTP option, nil when SendContext makes its own client below
 
@@ -183,8 +183,8 @@ func (em *Sender) SendContext(ctx context.Context, text string, params Params) e
 		return err
 	}
 
-	if len(params.To) == 0 {
-		return errors.New("no recipients")
+	if err := params.checkEnvelope(); err != nil {
+		return err
 	}
 
 	// message is built before the connection is made, this way a bad message doesn't reach the server at all
@@ -268,7 +268,7 @@ func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
 			break
 		}
 
-		em.logger.Logf("[DEBUG] send batch message %d, %q to %v", i, m.Text, m.Params.To)
+		em.logger.Logf("[DEBUG] send batch message %d, %d bytes to %v", i, len(m.Text), m.Params.To)
 		err := em.sendMessage(client, m)
 		if err == nil {
 			continue
@@ -322,8 +322,8 @@ func (e *messageError) Error() string { return e.err.Error() }
 func (e *messageError) Unwrap() error { return e.err }
 
 func (em *Sender) sendMessage(client SMTPClient, m Message) error {
-	if len(m.Params.To) == 0 {
-		return &messageError{err: errors.New("no recipients")}
+	if err := m.Params.checkEnvelope(); err != nil {
+		return &messageError{err: err}
 	}
 	msg, err := em.buildMessage(m.Text, m.Params)
 	if err != nil {
@@ -544,6 +544,22 @@ func (em *Sender) auth() smtp.Auth {
 	return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
 }
 
+// checkEnvelope rejects params without the sender or the recipients the SMTP transaction needs
+func (params Params) checkEnvelope() error {
+	if len(params.To) == 0 {
+		return errors.New("no recipients")
+	}
+	for _, to := range params.To {
+		if strings.TrimSpace(to) == "" { // would go out as RCPT TO:<> while the To header has no such address
+			return errors.New("empty recipient")
+		}
+	}
+	if strings.TrimSpace(params.From) == "" {
+		return errors.New("no sender")
+	}
+	return nil
+}
+
 // validateHeaders rejects user-provided values which would break out of the header they are put into.
 // CR and LF allow injecting arbitrary headers and message body, i.e. sending a different email than the caller intended.
 func (params Params) validateHeaders() error {
@@ -666,8 +682,8 @@ func (em *Sender) writeBody(wc io.WriteCloser, text string) error {
 }
 
 func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition string) error {
-	for _, attachment := range files {
-		if err := em.writeFile(mp, attachment, disposition); err != nil {
+	for i, attachment := range files {
+		if err := em.writeFile(mp, attachment, disposition, i); err != nil {
 			return err
 		}
 	}
@@ -677,8 +693,9 @@ func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition s
 	return nil
 }
 
-// writeFile adds a single file as a mime part, the file is closed on every return path
-func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string) (err error) {
+// writeFile adds a single file as a mime part, the file is closed on every return path.
+// The index is the position of the file in its list, it makes the Content-ID of an inline image unique.
+func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string, index int) (err error) {
 	file, err := os.Open(filepath.Clean(attachment))
 	if err != nil {
 		return err
@@ -720,7 +737,7 @@ func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string
 		header.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": fName}))
 	}
 	if disposition == "inline" {
-		header.Set("Content-ID", fmt.Sprintf("<%s>", fName))
+		header.Set("Content-ID", contentID(index, fName))
 	}
 
 	writer, err := mp.CreatePart(header)
@@ -738,6 +755,19 @@ func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string
 		return err
 	}
 	return encoder.Close()
+}
+
+// contentID makes the Content-ID of the inline image at the given index as <index.name>, with every character
+// of the file name other than an ASCII letter, a digit, a dot, a hyphen or an underscore replaced by an underscore.
+// The result is a valid header value and reads the same in a cid: URL, which needs no escaping for these characters.
+func contentID(index int, fName string) string {
+	name := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, fName)
+	return fmt.Sprintf("<%d.%s>", index, name)
 }
 
 // base64LineLimit is the maximum line length for base64 encoded mime parts, set by RFC 2045
