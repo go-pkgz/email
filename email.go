@@ -36,7 +36,7 @@ type Sender struct {
 	host               string     // SMTP host
 	heloHost           string     // SMTP HELO/EHLO host
 	port               int        // SMTP port
-	contentType        string     // content type of the text body, text/plain when set empty
+	contentType        string     // content type of the text body, the ContentType option stores text/plain for an empty value
 	tls                bool       // TLS auth
 	starttls           bool       // startTLS
 	insecureSkipVerify bool       // insecure Skip Verify
@@ -142,9 +142,6 @@ func NewSender(smtpHost string, options ...Option) *Sender {
 	}
 	for _, opt := range options {
 		opt(&res)
-	}
-	if res.contentType == "" { // the body is always quoted-printable, which needs the headers saying so
-		res.contentType = `text/plain`
 	}
 
 	res.logger.Logf("[INFO] new email sender created with host: %s:%d, helo: %q, tls: %v, insecureSkipVerify: %v, username: %q, timeout: %v, "+
@@ -642,11 +639,7 @@ func (em *Sender) buildMessage(text string, params Params) (*bytes.Buffer, error
 	}
 
 	addHeader("Content-Transfer-Encoding", "quoted-printable")
-	contentType := em.contentType
-	if contentType == "" { // set empty by applying the ContentType option to a made sender
-		contentType = `text/plain`
-	}
-	addHeader("Content-Type", fmt.Sprintf("%s; charset=%q", contentType, em.contentCharset))
+	addHeader("Content-Type", fmt.Sprintf("%s; charset=%q", em.contentType, em.contentCharset))
 
 	buff.WriteString("\n") // empty line between the headers and the body
 

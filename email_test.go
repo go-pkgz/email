@@ -921,8 +921,12 @@ func TestEmail_buildMessage(t *testing.T) {
 }
 
 func TestEmail_buildMessageEmptyContentType(t *testing.T) {
-	e := NewSender("localhost", ContentType(""))
+	var logged []string
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
+	e := NewSender("localhost", ContentType(""), Log(l))
 	assert.Contains(t, e.String(), `content-type:"text/plain"`)
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], `content type: "text/plain"`)
 	text := "Текст with = sign\n"
 
 	t.Run("text only", func(t *testing.T) {
@@ -939,11 +943,14 @@ func TestEmail_buildMessageEmptyContentType(t *testing.T) {
 	})
 
 	t.Run("option applied to a made sender", func(t *testing.T) {
-		s := NewSender("localhost")
+		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+		client := newBatchClientMock()
+		client.DataFunc = func() (io.WriteCloser, error) { return wc, nil }
+		s := NewSender("localhost", ContentType("text/html"), SMTP(client))
 		ContentType("")(s)
-		msg, err := s.buildMessage(text, Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj"})
-		require.NoError(t, err)
-		assert.Contains(t, msg.String(), "\nContent-Type: text/plain; charset=\"UTF-8\"\n")
+		assert.Contains(t, s.String(), `content-type:"text/plain"`)
+		require.NoError(t, s.Send(text, Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj"}))
+		assert.Contains(t, wc.buff.String(), "\nContent-Type: text/plain; charset=\"UTF-8\"\n")
 	})
 
 	t.Run("with attachment", func(t *testing.T) {
