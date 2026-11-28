@@ -56,7 +56,7 @@ type Params struct {
 	UnsubscribeLink string   // POST, https://support.google.com/mail/answer/81126 -> "Use one-click unsubscribe"
 	InReplyTo       string   // Message-ID of the message this one replies to, without angle brackets; written as In-Reply-To
 	Attachments     []string // attachments path
-	InlineImages    []string // inline images path, the HTML refers to the image N of the list as cid:N.name, see the README
+	InlineImages    []string // inline images path, the HTML refers to each by its Content-ID, the file name or N.name, see the README
 }
 
 // Logger is used to log errors and debug messages
@@ -675,8 +675,20 @@ func (em *Sender) writeBody(wc io.WriteCloser, text string) error {
 }
 
 func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition string) error {
+	var ids []string
+	if disposition == "inline" {
+		names := make([]string, len(files))
+		for i, f := range files {
+			names[i] = filepath.Base(f)
+		}
+		ids = contentIDs(names)
+	}
 	for i, attachment := range files {
-		if err := em.writeFile(mp, attachment, disposition, i); err != nil {
+		id := ""
+		if ids != nil {
+			id = ids[i]
+		}
+		if err := em.writeFile(mp, attachment, disposition, id); err != nil {
 			return err
 		}
 	}
@@ -687,8 +699,8 @@ func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition s
 }
 
 // writeFile adds a single file as a mime part, the file is closed on every return path.
-// The index is the position of the file in its list, it makes the Content-ID of an inline image unique.
-func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string, index int) (err error) {
+// The contentID, without angle brackets, is written as the Content-ID of an inline image.
+func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition, contentID string) (err error) {
 	file, err := os.Open(filepath.Clean(attachment))
 	if err != nil {
 		return err
@@ -730,7 +742,7 @@ func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string
 		header.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": fName}))
 	}
 	if disposition == "inline" {
-		header.Set("Content-ID", contentID(index, fName))
+		header.Set("Content-ID", "<"+contentID+">")
 	}
 
 	writer, err := mp.CreatePart(header)
@@ -750,17 +762,90 @@ func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string
 	return encoder.Close()
 }
 
-// contentID makes the Content-ID of the inline image at the given index as <index.name>, with every character
-// of the file name other than an ASCII letter, a digit, a dot, a hyphen or an underscore replaced by an underscore.
-// The result is a valid header value and reads the same in a cid: URL, which needs no escaping for these characters.
-func contentID(index int, fName string) string {
+// contentIDs returns the Content-ID, without angle brackets, of each inline image, given the file names in the
+// order of InlineImages. A name that is a valid Content-ID and that no other image in the list has keeps it as
+// is, so that HTML written as cid:logo.png goes on working. Every other image, the ones with a name that is not
+// valid and all the images sharing a repeated name, gets the generated ID N.name (see generatedContentID).
+// The kept names are reserved before any ID is generated, so a generated ID never equals a kept one: when N.name
+// is taken, N-1.name, N-2.name and so on are tried in turn. Names are compared case-sensitively.
+func contentIDs(names []string) []string {
+	count := make(map[string]int, len(names))
+	for _, name := range names {
+		count[name]++
+	}
+	ids := make([]string, len(names))
+	used := make(map[string]bool, len(names))
+	for i, name := range names {
+		if count[name] == 1 && validContentID(name) {
+			ids[i] = name
+			used[name] = true
+		}
+	}
+	for i, name := range names {
+		if ids[i] != "" {
+			continue
+		}
+		base := generatedContentID(name)
+		id := strconv.Itoa(i) + "." + base
+		for k := 1; used[id]; k++ {
+			id = strconv.Itoa(i) + "-" + strconv.Itoa(k) + "." + base
+		}
+		ids[i] = id
+		used[id] = true
+	}
+	return ids
+}
+
+// validContentID reports whether a file name can be used as a Content-ID as is and referred to by the same text
+// in a cid: URL. It accepts the id-left of an RFC 5322 msg-id, dot-atom-text, optionally followed by "@" and a
+// second dot-atom-text as id-right: atoms of one or more characters joined by single dots, with no dot at either
+// end. The atom characters are the RFC 5322 atext a cid: URL carries without percent-encoding (RFC 2392):
+// ASCII letters, digits and ! $ & ' * + - = _ ~. Everything else, a space, a non-ASCII letter, %, # or ? among
+// them, makes the name invalid, and so does a second "@".
+func validContentID(name string) bool {
+	left, right, hasRight := strings.Cut(name, "@")
+	if !validDotAtom(left) {
+		return false
+	}
+	return !hasRight || validDotAtom(right)
+}
+
+// validDotAtom reports whether s is dot-atom-text made of the characters validContentID allows
+func validDotAtom(s string) bool {
+	for _, atom := range strings.Split(s, ".") {
+		if atom == "" {
+			return false
+		}
+		for _, r := range atom {
+			if !isContentIDChar(r) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isContentIDChar(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("!$&'*+-=_~", r)
+}
+
+// generatedContentID makes the name part of a generated Content-ID from a file name: every character other than an
+// ASCII letter, a digit, a dot, a hyphen or an underscore becomes an underscore, and so does every empty atom
+// (a leading, trailing or doubled dot gets an underscore on its empty side), so the result is always dot-atom-text.
+func generatedContentID(fName string) string {
 	name := strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
 			return r
 		}
 		return '_'
 	}, fName)
-	return fmt.Sprintf("<%d.%s>", index, name)
+	atoms := strings.Split(name, ".")
+	for i, atom := range atoms {
+		if atom == "" {
+			atoms[i] = "_"
+		}
+	}
+	return strings.Join(atoms, ".")
 }
 
 // base64LineLimit is the maximum line length for base64 encoded mime parts, set by RFC 2045

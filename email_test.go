@@ -1163,7 +1163,7 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 		Port(2525),
 		Log(l))
 
-	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:0.image.jpg\"></div>\n", Params{
+	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:image.jpg\"></div>\n", Params{
 		From:         "from@example.com",
 		To:           []string{"to@example.com"},
 		Subject:      "test email with attachments",
@@ -1179,9 +1179,9 @@ func TestEmail_buildMessageWithMIMEAndInlineImages(t *testing.T) {
 	img, ok := tree.firstChild("image/jpeg")
 	require.True(t, ok, "inline image part present under related")
 	assert.Equal(t, "inline", img.disposition)
-	assert.Equal(t, "<0.image.jpg>", img.contentID)
+	assert.Equal(t, "<image.jpg>", img.contentID)
 	assert.Equal(t, []string{"image.jpg"}, attachmentNames(tree.childrenByDisposition("inline")))
-	assert.Contains(t, msg.String(), "Content-Id: <0.image.jpg>", msg.String())
+	assert.Contains(t, msg.String(), "Content-Id: <image.jpg>", msg.String())
 	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: base64", msg.String())
 	fData, err := os.ReadFile("testdata/image.jpg")
 	require.NoError(t, err)
@@ -1198,7 +1198,7 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 		Port(2525),
 		Log(l))
 
-	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:0.image.jpg\"></div>\n", Params{
+	msg, err := e.buildMessage("<div>this is a test mail with inline images</div><div><img src=\"cid:image.jpg\"></div>\n", Params{
 		From:         "from@example.com",
 		To:           []string{"to@example.com"},
 		Subject:      "test email with attachments",
@@ -1218,12 +1218,12 @@ func TestEmail_buildMessageWithMIMEAndAttachmentsAndInlineImages(t *testing.T) {
 	require.True(t, ok, "inline image inside related, not directly under mixed")
 	require.Len(t, related.childrenByDisposition("inline"), 1)
 	assert.Equal(t, "inline", img.disposition)
-	assert.Equal(t, "<0.image.jpg>", img.contentID)
+	assert.Equal(t, "<image.jpg>", img.contentID)
 	attachments := tree.childrenByDisposition("attachment")
 	require.Len(t, attachments, 3)
 	assert.Equal(t, []string{"1.txt", "2.txt", "image.jpg"}, attachmentNames(tree.childrenByDisposition("attachment")))
 	assert.Equal(t, []string{"image.jpg"}, attachmentNames(related.childrenByDisposition("inline")))
-	assert.Contains(t, msg.String(), "Content-Id: <0.image.jpg>", msg.String())
+	assert.Contains(t, msg.String(), "Content-Id: <image.jpg>", msg.String())
 	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: base64", msg.String())
 
 	fData1, err := os.ReadFile("testdata/1.txt")
@@ -1303,40 +1303,98 @@ func TestEmail_buildMessageFileNameInjection(t *testing.T) {
 
 func TestEmail_buildMessageInlineImageContentID(t *testing.T) {
 	e := NewSender("localhost", ContentType("text/html"))
-	dir, otherDir := t.TempDir(), t.TempDir()
-	write := func(t *testing.T, dir, name string) string {
-		t.Helper()
-		path := filepath.Join(dir, name)
-		require.NoError(t, os.WriteFile(path, []byte("image body"), 0o600))
-		return path
+	// each image gets its own content, so the part a Content-ID points at tells which file it came from
+	type image struct{ dir, name, cid string }
+
+	tests := []struct {
+		name   string
+		images []image
+	}{
+		{"valid unique names keep their Content-ID next to generated ones", []image{
+			{"a", "logo.png", "logo.png"},
+			{"a", "my photo.png", "1.my_photo.png"},
+			{"a", "logo@2x.png", "logo@2x.png"},
+			{"a", "a-b_c.1.png", "a-b_c.1.png"},
+			{"a", "x+y=z~!$&'*.png", "x+y=z~!$&'*.png"},
+		}},
+		{"a repeated name is generated for every image that has it", []image{
+			{"a", "logo.png", "0.logo.png"},
+			{"b", "logo.png", "1.logo.png"},
+			{"a", "icon.png", "icon.png"},
+		}},
+		{"a generated Content-ID never takes a kept one, wherever the kept one is", []image{
+			{"a", "logo.png", "0.logo.png"},
+			{"b", "logo.png", "1-2.logo.png"},
+			{"a", "1.logo.png", "1.logo.png"},
+			{"a", "1-1.logo.png", "1-1.logo.png"},
+		}},
+		{"invalid names are generated as dot-atom-text", []image{
+			{"a", "angle>bracket.png", "0.angle_bracket.png"},
+			{"a", `qu"ote;semi.png`, "1.qu_ote_semi.png"},
+			{"a", "отчёт.png", "2._____.png"},
+			{"a", ".hidden.png", "3._.hidden.png"},
+			{"a", "a..b.png", "4.a._.b.png"},
+			{"a", "trailing.", "5.trailing._"},
+			{"a", "50%.png", "6.50_.png"},
+			{"a", "a#b?.png", "7.a_b_.png"},
+			{"a", "two@at@x.png", "8.two_at_x.png"},
+			{"a", "@x.png", "9._x.png"},
+			{"a", "x@.png", "10.x_.png"},
+		}},
 	}
 
-	images := []struct{ path, cid string }{
-		{write(t, dir, "logo.png"), "0.logo.png"},
-		{write(t, otherDir, "logo.png"), "1.logo.png"},
-		{write(t, dir, "my pic.png"), "2.my_pic.png"},
-		{write(t, dir, "angle>bracket.png"), "3.angle_bracket.png"},
-		{write(t, dir, `qu"ote;semi.png`), "4.qu_ote_semi.png"},
-		{write(t, dir, "отчёт.png"), "5._____.png"},
-		{write(t, dir, "a-b_c.1.png"), "6.a-b_c.1.png"},
-	}
-	paths := make([]string, 0, len(images))
-	for _, img := range images {
-		paths = append(paths, img.path)
-	}
+	// dot-atom-text of the characters validContentID allows, with at most one "@"
+	atom := `[A-Za-z0-9!$&'*+=_~-]+`
+	dotAtom := atom + `(\.` + atom + `)*`
+	validID := regexp.MustCompile(`^<` + dotAtom + `(@` + dotAtom + `)?>$`)
 
-	msg, err := e.buildMessage(`<img src="cid:0.logo.png">`, Params{From: "from@example.com", To: []string{"to@example.com"}, InlineImages: paths})
-	require.NoError(t, err)
-	tree := parseMIMETree(t, msg.String())
-	inline := tree.childrenByDisposition("inline")
-	require.Len(t, inline, len(images))
-	validID := regexp.MustCompile(`^<\d+\.[A-Za-z0-9._-]+>$`)
-	for i, part := range inline {
-		assert.Equal(t, "<"+images[i].cid+">", part.contentID, "image %d", i)
-		assert.Regexp(t, validID, part.contentID)
-		assert.Equal(t, []byte("image body"), part.content)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			paths := make([]string, 0, len(tt.images))
+			for i, img := range tt.images {
+				dir := filepath.Join(root, img.dir)
+				require.NoError(t, os.MkdirAll(dir, 0o700))
+				path := filepath.Join(dir, img.name)
+				require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf("image %d", i)), 0o600))
+				paths = append(paths, path)
+			}
+
+			msg, err := e.buildMessage(`<img src="cid:logo.png">`, Params{From: "from@example.com", To: []string{"to@example.com"},
+				InlineImages: paths})
+			require.NoError(t, err)
+			inline := parseMIMETree(t, msg.String()).childrenByDisposition("inline")
+			require.Len(t, inline, len(tt.images))
+
+			byID := map[string][]byte{}
+			for i, part := range inline {
+				assert.Equal(t, "<"+tt.images[i].cid+">", part.contentID, "image %d, %q", i, tt.images[i].name)
+				assert.Regexp(t, validID, part.contentID)
+				assert.Equal(t, tt.images[i].name, part.fileName, "the file name itself is kept in the disposition")
+				assert.NotContains(t, byID, part.contentID, "Content-ID %s is unique", part.contentID)
+				byID[part.contentID] = part.content
+			}
+			for i, img := range tt.images {
+				assert.Equal(t, fmt.Sprintf("image %d", i), string(byID["<"+img.cid+">"]), "cid:%s resolves to %q", img.cid, img.name)
+			}
+		})
 	}
-	assert.Equal(t, filepath.Base(images[5].path), inline[5].fileName, "the file name itself is kept in the disposition")
+}
+
+func TestValidContentID(t *testing.T) {
+	tests := []struct {
+		name  string
+		valid bool
+	}{
+		{"logo.png", true}, {"logo@2x.png", true}, {"a.b@c.d", true}, {"x+y=z~!$&'*_-.png", true}, {"README", true},
+		{"", false}, {".png", false}, {"logo.", false}, {"a..b", false}, {"@x", false}, {"x@", false}, {"a@b@c", false},
+		{"my photo.png", false}, {"50%.png", false}, {"a#b", false}, {"a?b", false}, {"<a>", false}, {`a"b`, false},
+		{"a;b", false}, {"a,b", false}, {"a(b)", false}, {"a/b", false}, {"a{b}", false}, {"a|b", false}, {"a^b", false},
+		{"a`b", false}, {"отчёт.png", false}, {"tab\t.png", false},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.valid, validContentID(tt.name), "%q", tt.name)
+	}
 }
 
 func TestEmail_buildMessageAttachmentLineLength(t *testing.T) {
@@ -1466,7 +1524,7 @@ func TestSender_String(t *testing.T) {
 // uncomment to debug with real smtp server
 // func TestSendIntegration(t *testing.T) {
 //	client := NewSender("localhost", ContentType("text/html"), Port(2525))
-//	err := client.Send("<html><div>some content, foo bar</div>\n<div><img src=\"cid:0.image.jpg\"/>\n</div></html>",
+//	err := client.Send("<html><div>some content, foo bar</div>\n<div><img src=\"cid:image.jpg\"/>\n</div></html>",
 //		Params{From: "me@example.com", To: []string{"to@example.com"}, Subject: "Hello world!",
 //			Attachments: []string{"testdata/1.txt", "testdata/2.txt", "testdata/image.jpg"},
 //			InlineImages: []string{"testdata/image.jpg"},

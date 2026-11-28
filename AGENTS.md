@@ -56,11 +56,14 @@ Key design points that span files:
   multi-error `Unwrap`.
 
 - **`buildMessage` is the intricate part.** It assembles headers manually, then bodies: `multipart/mixed` for
-  attachments, `multipart/related` for inline images, quoted-printable for the text body. Inline images get an
-  auto `Content-ID` of `<N.name>`, their position in `InlineImages` and the file name with everything outside
-  `[A-Za-z0-9._-]` replaced by `_` (`contentID`). Attachment/inline type is sniffed from the first 512 bytes via
-  `http.DetectContentType`, then the file is re-seeked to 0 and base64-encoded. Changes here are easy to break
-  silently — the tests assert on the exact serialized message string.
+  attachments, `multipart/related` for inline images, quoted-printable for the text body. An inline image keeps
+  its file name as `Content-ID` when the name is a valid Content-ID that no other inline image has
+  (`validContentID`); any other gets `<N.name>`, its position in `InlineImages` and the file name with everything
+  outside `[A-Za-z0-9._-]` and every empty dot-separated part replaced by `_` (`generatedContentID`). Kept names are
+  reserved first, and a generated `N.name` that equals one becomes `N-1.name`, `N-2.name` and so on (`contentIDs`).
+  Attachment/inline type is sniffed from the first 512 bytes via `http.DetectContentType`, then the file is
+  re-seeked to 0 and base64-encoded. Changes here are easy to break silently — the tests assert on the exact
+  serialized message string.
 
 - **LOGIN auth (`auth.go`) exists because stdlib has PLAIN and CRAM-MD5, not LOGIN.** Needed for Office 365 /
   Outlook.com. Enabled with the `LoginAuth()` option; it refuses to send credentials over an unencrypted,

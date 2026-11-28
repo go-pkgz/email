@@ -63,10 +63,17 @@ To send email user need to create a sender first and then use `Send` method. The
 
 See [go docs](https://pkg.go.dev/github.com/go-pkgz/email#Sender.Send) for `Send` function.
 
-Each inline image gets the Content-Id `<N.name>`, where `N` is the position of the image in `InlineImages`,
-counting from 0, and `name` is its file name with every character other than ASCII letters, digits, dots, hyphens
-and underscores replaced by an underscore. HTML refers to it as `cid:N.name`, so the second image of
-`InlineImages: []string{"/path/to/logo.png", "/path/to/my photo.jpg"}` is shown with `<img src="cid:1.my_photo.jpg">`.
+HTML refers to an inline image by its Content-Id with `cid:`. An image keeps its file name as the Content-Id,
+`<logo.png>` referred to as `cid:logo.png`, when no other image in `InlineImages` has the same file name and the name
+is a valid Content-Id that a `cid:` URL carries as is: parts of ASCII letters, digits and `` !$&'*+-=_~ `` joined by
+single dots, with no dot at either end, and optionally one `@` between two such parts, as in `logo@2x.png`. Any other
+image, including each image whose file name appears more than once in the list, gets the generated Content-Id
+`<N.name>`, where `N` is the position of the image in `InlineImages`, counting from 0, and `name` is the file name
+with every character other than ASCII letters, digits, dots, hyphens and underscores replaced by an underscore and
+with an underscore in place of an empty part (`.hidden.png` becomes `_.hidden.png`). When a kept file name is already
+`N.name`, the generated one is `N-1.name`, or `N-2.name` if that is taken too, and so on. So the images of
+`InlineImages: []string{"/path/to/logo.png", "/path/to/my photo.jpg"}` are shown with `<img src="cid:logo.png">` and
+`<img src="cid:1.my_photo.jpg">`.
 
 `Send` returns an error without sending anything when `To` is empty ("no recipients") or holds an empty or blank
 address ("empty recipient"), when `From` is empty or blank ("no sender"), and when `From`, `To`, `Subject`, `UnsubscribeLink`, `InReplyTo` or the file name of an
