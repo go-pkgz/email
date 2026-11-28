@@ -26,10 +26,13 @@ func Port(port int) Option {
 	}
 }
 
-// ContentType sets content type of the email
+// ContentType sets content type of the email, an empty value sets the default text/plain
 func ContentType(contentType string) Option {
 	return func(s *Sender) {
 		s.contentType = contentType
+		if s.contentType == "" { // the body is always quoted-printable, which needs the headers saying so
+			s.contentType = `text/plain`
+		}
 	}
 }
 

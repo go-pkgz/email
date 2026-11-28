@@ -36,7 +36,7 @@ type Sender struct {
 	host               string     // SMTP host
 	heloHost           string     // SMTP HELO/EHLO host
 	port               int        // SMTP port
-	contentType        string     // content type, optional. Will trigger MIME and Content-Type headers
+	contentType        string     // content type of the text body, the ContentType option stores text/plain for an empty value
 	tls                bool       // TLS auth
 	starttls           bool       // startTLS
 	insecureSkipVerify bool       // insecure Skip Verify
@@ -51,12 +51,12 @@ type Sender struct {
 // Params contains all user-defined parameters to send emails
 type Params struct {
 	From            string   // from email field
-	To              []string // from email field
+	To              []string // recipients, each "addr" or "Name <addr>"
 	Subject         string   // email subject
 	UnsubscribeLink string   // POST, https://support.google.com/mail/answer/81126 -> "Use one-click unsubscribe"
-	InReplyTo       string   // identifier for email group (category), used for email grouping
+	InReplyTo       string   // Message-ID of the message this one replies to, without angle brackets; written as In-Reply-To
 	Attachments     []string // attachments path
-	InlineImages    []string // InlineImages images path
+	InlineImages    []string // inline images path, the HTML refers to each by its Content-ID, the file name or N.name, see the README
 }
 
 // Logger is used to log errors and debug messages
@@ -162,7 +162,7 @@ func (em *Sender) Send(text string, params Params) error {
 // Note that a client set that way owns its connection, so such a transaction can't be terminated in the middle.
 // Always closes client on completion or failure.
 func (em *Sender) SendContext(ctx context.Context, text string, params Params) error {
-	em.logger.Logf("[DEBUG] send %q to %v", text, params.To)
+	em.logger.Logf("[DEBUG] send %d bytes to %v", len(text), params.To) // the text can hold a secret, i.e. a reset code
 
 	client := em.smtpClient // set by the SMTP option, nil when SendContext makes its own client below
 
@@ -180,8 +180,8 @@ func (em *Sender) SendContext(ctx context.Context, text string, params Params) e
 		return err
 	}
 
-	if len(params.To) == 0 {
-		return errors.New("no recipients")
+	if err := params.checkEnvelope(); err != nil {
+		return err
 	}
 
 	// message is built before the connection is made, this way a bad message doesn't reach the server at all
@@ -265,7 +265,7 @@ func (em *Sender) SendBatch(ctx context.Context, msgs []Message) error {
 			break
 		}
 
-		em.logger.Logf("[DEBUG] send batch message %d, %q to %v", i, m.Text, m.Params.To)
+		em.logger.Logf("[DEBUG] send batch message %d, %d bytes to %v", i, len(m.Text), m.Params.To)
 		err := em.sendMessage(client, m)
 		if err == nil {
 			continue
@@ -319,8 +319,8 @@ func (e *messageError) Error() string { return e.err.Error() }
 func (e *messageError) Unwrap() error { return e.err }
 
 func (em *Sender) sendMessage(client SMTPClient, m Message) error {
-	if len(m.Params.To) == 0 {
-		return &messageError{err: errors.New("no recipients")}
+	if err := m.Params.checkEnvelope(); err != nil {
+		return &messageError{err: err}
 	}
 	msg, err := em.buildMessage(m.Text, m.Params)
 	if err != nil {
@@ -370,7 +370,7 @@ func (em *Sender) transaction(client SMTPClient, msg *bytes.Buffer, params Param
 
 	for _, rcpt := range params.To {
 		if err := client.Rcpt(extractEmailAddress(rcpt)); err != nil {
-			return fmt.Errorf("bad to address %q: %w", params.To, err)
+			return fmt.Errorf("bad to address %q: %w", rcpt, err)
 		}
 	}
 
@@ -407,6 +407,27 @@ func extractEmailAddress(from string) string {
 		return from
 	}
 	return addr.Address
+}
+
+// formatAddress makes the header value of an address with a display name, encoding a non-ASCII name as RFC 2047 says,
+// so it reaches the recipient intact instead of as raw 8-bit header text.
+// An address without a display name, or one that doesn't parse, is used as given.
+func formatAddress(addr string) string {
+	a, err := mail.ParseAddress(strings.TrimSpace(addr))
+	if err != nil || a.Name == "" {
+		return addr
+	}
+	return a.String()
+}
+
+// joinAddresses joins the addresses of a header with a comma and a space, each trimmed of surrounding whitespace.
+// RFC 2047 needs the space between an encoded display name and the comma before it.
+func joinAddresses(addrs []string) string {
+	trimmed := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		trimmed = append(trimmed, strings.TrimSpace(addr))
+	}
+	return strings.Join(trimmed, ", ")
 }
 
 func (em *Sender) String() string {
@@ -446,7 +467,7 @@ func (em *Sender) client(ctx context.Context) (c *smtp.Client, stop func(), err 
 		}
 	} else {
 		if conn, err = dialer.DialContext(ctx, "tcp", srvAddress); err != nil {
-			return nil, nil, fmt.Errorf("timeout connecting to %s: %w", srvAddress, err)
+			return nil, nil, fmt.Errorf("failed to connect to %s: %w", srvAddress, err)
 		}
 	}
 
@@ -520,6 +541,22 @@ func (em *Sender) auth() smtp.Auth {
 	return smtp.PlainAuth("", em.smtpUserName, em.smtpPassword, em.host)
 }
 
+// checkEnvelope rejects params without the sender or the recipients the SMTP transaction needs
+func (params Params) checkEnvelope() error {
+	if len(params.To) == 0 {
+		return errors.New("no recipients")
+	}
+	for _, to := range params.To {
+		if strings.TrimSpace(to) == "" { // would go out as RCPT TO:<> while the To header has no such address
+			return errors.New("empty recipient")
+		}
+	}
+	if strings.TrimSpace(params.From) == "" {
+		return errors.New("no sender")
+	}
+	return nil
+}
+
 // validateHeaders rejects user-provided values which would break out of the header they are put into.
 // CR and LF allow injecting arbitrary headers and message body, i.e. sending a different email than the caller intended.
 func (params Params) validateHeaders() error {
@@ -568,8 +605,12 @@ func (em *Sender) buildMessage(text string, params Params) (*bytes.Buffer, error
 	mpRelated := multipart.NewWriter(buff)
 	boundaryRelated := mpRelated.Boundary()
 
-	addHeader("From", params.From)
-	addHeader("To", strings.Join(params.To, ","))
+	addHeader("From", formatAddress(params.From))
+	to := make([]string, 0, len(params.To))
+	for _, rcpt := range params.To {
+		to = append(to, formatAddress(rcpt))
+	}
+	addHeader("To", joinAddresses(to))
 	addHeader("Subject", mime.BEncoding.Encode("utf-8", params.Subject))
 
 	if params.UnsubscribeLink != "" {
@@ -584,10 +625,7 @@ func (em *Sender) buildMessage(text string, params Params) (*bytes.Buffer, error
 	withAttachments := len(params.Attachments) > 0
 	withInlineImg := len(params.InlineImages) > 0
 
-	if em.contentType != "" || withAttachments || withInlineImg {
-		addHeader("MIME-version", "1.0")
-	}
-
+	addHeader("MIME-version", "1.0")
 	addHeader("Date", em.timeNow().Format(time.RFC1123Z))
 
 	if withAttachments {
@@ -600,10 +638,8 @@ func (em *Sender) buildMessage(text string, params Params) (*bytes.Buffer, error
 			boundaryRelated, "--"+boundaryRelated))
 	}
 
-	if em.contentType != "" {
-		addHeader("Content-Transfer-Encoding", "quoted-printable")
-		addHeader("Content-Type", fmt.Sprintf("%s; charset=%q", em.contentType, em.contentCharset))
-	}
+	addHeader("Content-Transfer-Encoding", "quoted-printable")
+	addHeader("Content-Type", fmt.Sprintf("%s; charset=%q", em.contentType, em.contentCharset))
 
 	buff.WriteString("\n") // empty line between the headers and the body
 
@@ -639,8 +675,20 @@ func (em *Sender) writeBody(wc io.WriteCloser, text string) error {
 }
 
 func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition string) error {
-	for _, attachment := range files {
-		if err := em.writeFile(mp, attachment, disposition); err != nil {
+	var ids []string
+	if disposition == "inline" {
+		names := make([]string, len(files))
+		for i, f := range files {
+			names[i] = filepath.Base(f)
+		}
+		ids = contentIDs(names)
+	}
+	for i, attachment := range files {
+		id := ""
+		if ids != nil {
+			id = ids[i]
+		}
+		if err := em.writeFile(mp, attachment, disposition, id); err != nil {
 			return err
 		}
 	}
@@ -650,8 +698,9 @@ func (em *Sender) writeFiles(mp *multipart.Writer, files []string, disposition s
 	return nil
 }
 
-// writeFile adds a single file as a mime part, the file is closed on every return path
-func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string) (err error) {
+// writeFile adds a single file as a mime part, the file is closed on every return path.
+// The contentID, without angle brackets, is written as the Content-ID of an inline image.
+func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition, contentID string) (err error) {
 	file, err := os.Open(filepath.Clean(attachment))
 	if err != nil {
 		return err
@@ -693,7 +742,7 @@ func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string
 		header.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": fName}))
 	}
 	if disposition == "inline" {
-		header.Set("Content-ID", fmt.Sprintf("<%s>", fName))
+		header.Set("Content-ID", "<"+contentID+">")
 	}
 
 	writer, err := mp.CreatePart(header)
@@ -711,6 +760,92 @@ func (em *Sender) writeFile(mp *multipart.Writer, attachment, disposition string
 		return err
 	}
 	return encoder.Close()
+}
+
+// contentIDs returns the Content-ID, without angle brackets, of each inline image, given the file names in the
+// order of InlineImages. A name that is a valid Content-ID and that no other image in the list has keeps it as
+// is, so that HTML written as cid:logo.png goes on working. Every other image, the ones with a name that is not
+// valid and all the images sharing a repeated name, gets the generated ID N.name (see generatedContentID).
+// The kept names are reserved before any ID is generated, so a generated ID never equals a kept one: when N.name
+// is taken, N-1.name, N-2.name and so on are tried in turn. Names are compared case-sensitively.
+func contentIDs(names []string) []string {
+	count := make(map[string]int, len(names))
+	for _, name := range names {
+		count[name]++
+	}
+	ids := make([]string, len(names))
+	used := make(map[string]bool, len(names))
+	for i, name := range names {
+		if count[name] == 1 && validContentID(name) {
+			ids[i] = name
+			used[name] = true
+		}
+	}
+	for i, name := range names {
+		if ids[i] != "" {
+			continue
+		}
+		base := generatedContentID(name)
+		id := strconv.Itoa(i) + "." + base
+		for k := 1; used[id]; k++ {
+			id = strconv.Itoa(i) + "-" + strconv.Itoa(k) + "." + base
+		}
+		ids[i] = id
+		used[id] = true
+	}
+	return ids
+}
+
+// validContentID reports whether a file name can be used as a Content-ID as is and referred to by the same text
+// in a cid: URL. It accepts the id-left of an RFC 5322 msg-id, dot-atom-text, optionally followed by "@" and a
+// second dot-atom-text as id-right: atoms of one or more characters joined by single dots, with no dot at either
+// end. The atom characters are the RFC 5322 atext a cid: URL carries without percent-encoding (RFC 2392):
+// ASCII letters, digits and ! $ & ' * + - = _ ~. Everything else, a space, a non-ASCII letter, %, # or ? among
+// them, makes the name invalid, and so does a second "@".
+func validContentID(name string) bool {
+	left, right, hasRight := strings.Cut(name, "@")
+	if !validDotAtom(left) {
+		return false
+	}
+	return !hasRight || validDotAtom(right)
+}
+
+// validDotAtom reports whether s is dot-atom-text made of the characters validContentID allows
+func validDotAtom(s string) bool {
+	for _, atom := range strings.Split(s, ".") {
+		if atom == "" {
+			return false
+		}
+		for _, r := range atom {
+			if !isContentIDChar(r) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isContentIDChar(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("!$&'*+-=_~", r)
+}
+
+// generatedContentID makes the name part of a generated Content-ID from a file name: every character other than an
+// ASCII letter, a digit, a dot, a hyphen or an underscore becomes an underscore, and so does every empty atom
+// (a leading, trailing or doubled dot gets an underscore on its empty side), so the result is always dot-atom-text.
+func generatedContentID(fName string) string {
+	name := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, fName)
+	atoms := strings.Split(name, ".")
+	for i, atom := range atoms {
+		if atom == "" {
+			atoms[i] = "_"
+		}
+	}
+	return strings.Join(atoms, ".")
 }
 
 // base64LineLimit is the maximum line length for base64 encoded mime parts, set by RFC 2045

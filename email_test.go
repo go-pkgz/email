@@ -17,9 +17,11 @@ import (
 	"math/big"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -561,8 +563,118 @@ func TestEmail_SendFailedRCPTO(t *testing.T) {
 		To:      []string{"to@example.com"},
 		Subject: "subj",
 	})
-	require.EqualError(t, err, "bad to address [\"to@example.com\"]: RCPT error")
+	require.EqualError(t, err, "bad to address \"to@example.com\": RCPT error")
 	assert.Len(t, smtpClient.RcptCalls(), 1)
+}
+
+func TestEmail_SendRejectedRecipientNamed(t *testing.T) {
+	smtpClient := &mocks.SMTPClientMock{
+		CloseFunc: func() error { return nil },
+		MailFunc:  func(string) error { return nil },
+		RcptFunc: func(to string) error {
+			if to == "bad@example.com" {
+				return &textproto.Error{Code: 550, Msg: "no such user"}
+			}
+			return nil
+		},
+	}
+
+	s := NewSender("localhost", SMTP(smtpClient))
+	err := s.Send("some text", Params{From: "from@example.com", To: []string{"ok@example.com", `"Bad" <bad@example.com>`, "next@example.com"}})
+	require.ErrorContains(t, err, `bad to address "\"Bad\" <bad@example.com>": 550`)
+	assert.NotContains(t, err.Error(), "ok@example.com", "only the rejected address is named")
+	var reply *textproto.Error
+	require.ErrorAs(t, err, &reply, "the server reply stays reachable")
+	assert.Equal(t, 550, reply.Code)
+	assert.Len(t, smtpClient.RcptCalls(), 2, "stops at the rejected recipient")
+}
+
+func TestEmail_SendConnectionRefused(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, listener.Close())
+
+	s := NewSender("127.0.0.1", Port(port), TimeOut(10*time.Second))
+	err = s.Send("some text", Params{From: "from@example.com", To: []string{"to@example.com"}})
+	require.ErrorContains(t, err, fmt.Sprintf("failed to make smtp client: failed to connect to 127.0.0.1:%d: ", port))
+	assert.NotContains(t, err.Error(), "timeout connecting", "a refused connection is not a timeout")
+}
+
+func TestEmail_SendEmptyRecipient(t *testing.T) {
+	for _, to := range [][]string{{""}, {"to@example.com", ""}, {"to@example.com", " \t"}} {
+		t.Run(fmt.Sprintf("to %q", to), func(t *testing.T) {
+			smtpClient := newBatchClientMock()
+			s := NewSender("localhost", SMTP(smtpClient))
+			err := s.Send("some text", Params{From: "from@example.com", To: to})
+			require.EqualError(t, err, "empty recipient")
+			assert.Empty(t, smtpClient.MailCalls(), "rejected before talking to the server")
+			assert.Empty(t, smtpClient.RcptCalls(), "no RCPT TO:<> for the empty address")
+			assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
+		})
+	}
+
+	t.Run("batch goes on after a message with an empty recipient", func(t *testing.T) {
+		client := newBatchClientMock() // no Reset method, a rejected transaction would stop the batch
+		sender := NewSender("localhost", SMTP(client))
+		err := sender.SendBatch(context.Background(), []Message{
+			{Text: "first", Params: Params{From: "from@example.com", To: []string{"a@example.com", ""}}},
+			{Text: "second", Params: Params{From: "from@example.com", To: []string{"b@example.com"}}},
+		})
+		var batchErr *BatchError
+		require.ErrorAs(t, err, &batchErr)
+		require.EqualError(t, batchErr.Errs[0], "empty recipient")
+		require.NoError(t, batchErr.Errs[1])
+		require.Len(t, client.RcptCalls(), 1, "only the second message reaches the server")
+		assert.Equal(t, "b@example.com", client.RcptCalls()[0].To)
+	})
+}
+
+func TestEmail_SendNoSender(t *testing.T) {
+	for _, from := range []string{"", "  "} {
+		t.Run(fmt.Sprintf("from %q", from), func(t *testing.T) {
+			smtpClient := newBatchClientMock()
+			s := NewSender("localhost", SMTP(smtpClient))
+			err := s.Send("some text", Params{From: from, To: []string{"to@example.com"}})
+			require.EqualError(t, err, "no sender")
+			assert.Empty(t, smtpClient.MailCalls(), "rejected before talking to the server")
+			assert.Len(t, smtpClient.CloseCalls(), 1, "client set with the SMTP option is closed on every failure")
+		})
+	}
+
+	t.Run("batch goes on after a message without sender", func(t *testing.T) {
+		client := newBatchClientMock() // no Reset method, a rejected transaction would stop the batch
+		sender := NewSender("localhost", SMTP(client))
+		err := sender.SendBatch(context.Background(), []Message{
+			{Text: "first", Params: Params{To: []string{"a@example.com"}}},
+			{Text: "second", Params: Params{From: "from@example.com", To: []string{"b@example.com"}}},
+		})
+		var batchErr *BatchError
+		require.ErrorAs(t, err, &batchErr)
+		require.EqualError(t, batchErr.Errs[0], "no sender")
+		require.NoError(t, batchErr.Errs[1])
+		require.Len(t, client.MailCalls(), 1, "the message without sender never reaches the server")
+		assert.Equal(t, "from@example.com", client.MailCalls()[0].From)
+		assert.Len(t, client.QuitCalls(), 1)
+	})
+}
+
+func TestEmail_SendLogsNoText(t *testing.T) {
+	var lines []string
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }}
+	secret := "password reset code 123456"
+	params := Params{From: "from@example.com", To: []string{"to@example.com"}}
+
+	s := NewSender("localhost", SMTP(newBatchClientMock()), Log(l))
+	require.NoError(t, s.Send(secret, params))
+	require.NoError(t, s.SendBatch(context.Background(), []Message{{Text: secret, Params: params}}))
+
+	require.NotEmpty(t, lines)
+	for _, line := range lines {
+		assert.NotContains(t, line, "123456", "the text is never logged")
+	}
+	assert.Contains(t, lines, "[DEBUG] send 26 bytes to [to@example.com]")
+	assert.Contains(t, lines, "[DEBUG] send batch message 0, 26 bytes to [to@example.com]")
 }
 
 func TestEmail_SendFailedMakeClient(t *testing.T) {
@@ -798,7 +910,7 @@ func TestEmail_buildMessage(t *testing.T) {
 		Subject: "subj",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, msg.String(), "From: from@example.com\nTo: to@example.com,to2@example.com\nSubject: subj\n", msg.String())
+	assert.Contains(t, msg.String(), "From: from@example.com\nTo: to@example.com, to2@example.com\nSubject: subj\n", msg.String())
 	assert.Contains(t, msg.String(), "this is a test\r\n12345", msg.String())
 	assert.Contains(t, msg.String(), "Date: ", msg.String())
 	assert.Contains(t, msg.String(), "Content-Transfer-Encoding: quoted-printable", msg.String())
@@ -806,6 +918,138 @@ func TestEmail_buildMessage(t *testing.T) {
 	tree := parseMIMETree(t, msg.String())
 	assert.Equal(t, "text/plain", tree.mediaType)
 	assert.Empty(t, tree.children)
+}
+
+func TestEmail_buildMessageEmptyContentType(t *testing.T) {
+	var logged []string
+	l := &mocks.LoggerMock{LogfFunc: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
+	e := NewSender("localhost", ContentType(""), Log(l))
+	assert.Contains(t, e.String(), `content-type:"text/plain"`)
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], `content type: "text/plain"`)
+	text := "Текст with = sign\n"
+
+	t.Run("text only", func(t *testing.T) {
+		msg, err := e.buildMessage(text, Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj"})
+		require.NoError(t, err)
+		m, err := mail.ReadMessage(strings.NewReader(msg.String()))
+		require.NoError(t, err)
+		assert.Equal(t, "1.0", m.Header.Get("MIME-Version"))
+		assert.Equal(t, "quoted-printable", m.Header.Get("Content-Transfer-Encoding"))
+		assert.Equal(t, `text/plain; charset="UTF-8"`, m.Header.Get("Content-Type"))
+		body, err := io.ReadAll(quotedprintable.NewReader(m.Body))
+		require.NoError(t, err)
+		assert.Equal(t, "Текст with = sign\r\n", string(body), "the body decodes back to the text")
+	})
+
+	t.Run("option applied to a made sender", func(t *testing.T) {
+		wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+		client := newBatchClientMock()
+		client.DataFunc = func() (io.WriteCloser, error) { return wc, nil }
+		s := NewSender("localhost", ContentType("text/html"), SMTP(client))
+		ContentType("")(s)
+		assert.Contains(t, s.String(), `content-type:"text/plain"`)
+		require.NoError(t, s.Send(text, Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj"}))
+		assert.Contains(t, wc.buff.String(), "\nContent-Type: text/plain; charset=\"UTF-8\"\n")
+	})
+
+	t.Run("with attachment", func(t *testing.T) {
+		msg, err := e.buildMessage(text, Params{From: "from@example.com", To: []string{"to@example.com"}, Subject: "subj",
+			Attachments: []string{"testdata/1.txt"}})
+		require.NoError(t, err)
+		assert.Contains(t, msg.String(), "Content-Transfer-Encoding: quoted-printable\nContent-Type: text/plain; charset=\"UTF-8\"\n")
+		tree := parseMIMETree(t, msg.String())
+		require.Equal(t, "multipart/mixed", tree.mediaType)
+		_, ok := tree.firstChild("text/plain")
+		assert.True(t, ok, "text body part present under mixed")
+	})
+}
+
+func TestEmail_buildMessageAddressDisplayNames(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    string
+		header  string
+		envelop string
+	}{
+		{"bare address", "me@example.com", "me@example.com", "me@example.com"},
+		{"address in angle brackets", "<me@example.com>", "<me@example.com>", "me@example.com"},
+		{"ascii name", `"John Doe" <me@example.com>`, `"John Doe" <me@example.com>`, "me@example.com"},
+		{"ascii name with comma", `"Doe, John" <me@example.com>`, `"Doe, John" <me@example.com>`, "me@example.com"},
+		{"non-ascii name", `"Ünïcode Name" <me@example.com>`, "=?utf-8?q?=C3=9Cn=C3=AFcode_Name?= <me@example.com>", "me@example.com"},
+		{"name encoded already", "=?utf-8?q?=C3=9Cn?= <me@example.com>", "=?utf-8?q?=C3=9Cn?= <me@example.com>", "me@example.com"},
+		{"not an address", "not an address", "not an address", "not an address"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wc := &fakeWriterCloser{buff: bytes.NewBuffer(nil)}
+			smtpClient := &mocks.SMTPClientMock{
+				MailFunc:  func(string) error { return nil },
+				RcptFunc:  func(string) error { return nil },
+				DataFunc:  func() (io.WriteCloser, error) { return wc, nil },
+				QuitFunc:  func() error { return nil },
+				CloseFunc: func() error { return nil },
+			}
+			s := NewSender("localhost", SMTP(smtpClient))
+			err := s.Send("some text", Params{From: tt.addr, To: []string{"first@example.com", tt.addr}, Subject: "subj"})
+			require.NoError(t, err)
+
+			assert.Contains(t, wc.buff.String(), "From: "+tt.header+"\nTo: first@example.com, "+tt.header+"\n")
+			require.Len(t, smtpClient.MailCalls(), 1)
+			assert.Equal(t, tt.envelop, smtpClient.MailCalls()[0].From, "envelope sender is the bare address")
+			require.Len(t, smtpClient.RcptCalls(), 2)
+			assert.Equal(t, tt.envelop, smtpClient.RcptCalls()[1].To, "envelope recipient is the bare address")
+
+			if tt.addr == "not an address" {
+				return
+			}
+			m, err := mail.ReadMessage(strings.NewReader(wc.buff.String()))
+			require.NoError(t, err)
+			want, err := mail.ParseAddress(tt.addr)
+			require.NoError(t, err)
+			from, err := m.Header.AddressList("From")
+			require.NoError(t, err)
+			assert.Equal(t, []*mail.Address{want}, from, "the display name decodes back to the original")
+			to, err := m.Header.AddressList("To")
+			require.NoError(t, err)
+			assert.Equal(t, []*mail.Address{{Address: "first@example.com"}, want}, to)
+		})
+	}
+}
+
+func TestJoinAddresses(t *testing.T) {
+	encoded := formatAddress(`"Иван Петров" <a@example.com>`)
+	tests := []struct {
+		name  string
+		addrs []string
+		want  string
+	}{
+		{"single address", []string{"a@example.com"}, "a@example.com"},
+		{"comma and space between addresses", []string{"a@example.com", "b@example.com"}, "a@example.com, b@example.com"},
+		{"whitespace around addresses trimmed", []string{"  a@example.com\t", " b@example.com \t"}, "a@example.com, b@example.com"},
+		{"encoded names separated by a space", []string{encoded, encoded}, encoded + ", " + encoded},
+		{"quoted name with a comma kept whole", []string{"a@example.com", `"Doe, John" <b@example.com>`}, `a@example.com, "Doe, John" <b@example.com>`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := joinAddresses(tt.addrs)
+			assert.Equal(t, tt.want, got)
+
+			m, err := mail.ReadMessage(strings.NewReader("To: " + got + "\n\nbody"))
+			require.NoError(t, err)
+			want := make([]*mail.Address, 0, len(tt.addrs))
+			for _, a := range tt.addrs {
+				parsed, perr := mail.ParseAddress(a)
+				require.NoError(t, perr)
+				want = append(want, parsed)
+			}
+			parsed, err := m.Header.AddressList("To")
+			require.NoError(t, err)
+			assert.Equal(t, want, parsed, "the header reads back as the same addresses")
+		})
+	}
 }
 
 func TestEmail_buildMessageWithMIME(t *testing.T) {
@@ -1055,6 +1299,102 @@ func TestEmail_buildMessageFileNameInjection(t *testing.T) {
 			assert.Equal(t, []byte("attachment body"), part.content)
 		}
 	})
+}
+
+func TestEmail_buildMessageInlineImageContentID(t *testing.T) {
+	e := NewSender("localhost", ContentType("text/html"))
+	// each image gets its own content, so the part a Content-ID points at tells which file it came from
+	type image struct{ dir, name, cid string }
+
+	tests := []struct {
+		name   string
+		images []image
+	}{
+		{"valid unique names keep their Content-ID next to generated ones", []image{
+			{"a", "logo.png", "logo.png"},
+			{"a", "my photo.png", "1.my_photo.png"},
+			{"a", "logo@2x.png", "logo@2x.png"},
+			{"a", "a-b_c.1.png", "a-b_c.1.png"},
+			{"a", "x+y=z~!$&'*.png", "x+y=z~!$&'*.png"},
+		}},
+		{"a repeated name is generated for every image that has it", []image{
+			{"a", "logo.png", "0.logo.png"},
+			{"b", "logo.png", "1.logo.png"},
+			{"a", "icon.png", "icon.png"},
+		}},
+		{"a generated Content-ID never takes a kept one, wherever the kept one is", []image{
+			{"a", "logo.png", "0.logo.png"},
+			{"b", "logo.png", "1-2.logo.png"},
+			{"a", "1.logo.png", "1.logo.png"},
+			{"a", "1-1.logo.png", "1-1.logo.png"},
+		}},
+		{"invalid names are generated as dot-atom-text", []image{
+			{"a", "angle>bracket.png", "0.angle_bracket.png"},
+			{"a", `qu"ote;semi.png`, "1.qu_ote_semi.png"},
+			{"a", "отчёт.png", "2._____.png"},
+			{"a", ".hidden.png", "3._.hidden.png"},
+			{"a", "a..b.png", "4.a._.b.png"},
+			{"a", "trailing.", "5.trailing._"},
+			{"a", "50%.png", "6.50_.png"},
+			{"a", "a#b?.png", "7.a_b_.png"},
+			{"a", "two@at@x.png", "8.two_at_x.png"},
+			{"a", "@x.png", "9._x.png"},
+			{"a", "x@.png", "10.x_.png"},
+		}},
+	}
+
+	// dot-atom-text of the characters validContentID allows, with at most one "@"
+	atom := `[A-Za-z0-9!$&'*+=_~-]+`
+	dotAtom := atom + `(\.` + atom + `)*`
+	validID := regexp.MustCompile(`^<` + dotAtom + `(@` + dotAtom + `)?>$`)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			paths := make([]string, 0, len(tt.images))
+			for i, img := range tt.images {
+				dir := filepath.Join(root, img.dir)
+				require.NoError(t, os.MkdirAll(dir, 0o700))
+				path := filepath.Join(dir, img.name)
+				require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf("image %d", i)), 0o600))
+				paths = append(paths, path)
+			}
+
+			msg, err := e.buildMessage(`<img src="cid:logo.png">`, Params{From: "from@example.com", To: []string{"to@example.com"},
+				InlineImages: paths})
+			require.NoError(t, err)
+			inline := parseMIMETree(t, msg.String()).childrenByDisposition("inline")
+			require.Len(t, inline, len(tt.images))
+
+			byID := map[string][]byte{}
+			for i, part := range inline {
+				assert.Equal(t, "<"+tt.images[i].cid+">", part.contentID, "image %d, %q", i, tt.images[i].name)
+				assert.Regexp(t, validID, part.contentID)
+				assert.Equal(t, tt.images[i].name, part.fileName, "the file name itself is kept in the disposition")
+				assert.NotContains(t, byID, part.contentID, "Content-ID %s is unique", part.contentID)
+				byID[part.contentID] = part.content
+			}
+			for i, img := range tt.images {
+				assert.Equal(t, fmt.Sprintf("image %d", i), string(byID["<"+img.cid+">"]), "cid:%s resolves to %q", img.cid, img.name)
+			}
+		})
+	}
+}
+
+func TestValidContentID(t *testing.T) {
+	tests := []struct {
+		name  string
+		valid bool
+	}{
+		{"logo.png", true}, {"logo@2x.png", true}, {"a.b@c.d", true}, {"x+y=z~!$&'*_-.png", true}, {"README", true},
+		{"", false}, {".png", false}, {"logo.", false}, {"a..b", false}, {"@x", false}, {"x@", false}, {"a@b@c", false},
+		{"my photo.png", false}, {"50%.png", false}, {"a#b", false}, {"a?b", false}, {"<a>", false}, {`a"b`, false},
+		{"a;b", false}, {"a,b", false}, {"a(b)", false}, {"a/b", false}, {"a{b}", false}, {"a|b", false}, {"a^b", false},
+		{"a`b", false}, {"отчёт.png", false}, {"tab\t.png", false},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.valid, validContentID(tt.name), "%q", tt.name)
+	}
 }
 
 func TestEmail_buildMessageAttachmentLineLength(t *testing.T) {
